@@ -179,6 +179,7 @@ kdaytrader/
   performance.py             수익률 관리 (거래 CSV 누적, 일/월/종목/사유/시간대 통계)
   diagnostics.py             인터넷 데이터 소스 연결 진단
   assistant.py               챗봇 도우미 (규칙 기반 해석기 + Claude 도구 호출 연동)
+  premarket.py               장전 자동 종목 선정 (후보 수집, 일봉 채점, 장중 재선정)
   webui.py / webui.html      CLI 용 간이 브라우저 대시보드
   screener.py                거래량 상위 스크리너
   dashboard.py               Rich 대시보드

@@ -96,6 +96,7 @@
             <li>실계좌 주문(kis.paper: false)은 반드시 모의투자로 충분히 검증 후 사용하세요.</li>
           </ul>
           <div class="sysinfo" id="sysinfo"></div>
+          <div class="sysinfo" id="pmInfo"></div>
         </div>
         <div class="card span2">
           <h2>인터넷 데이터 연결 진단 <button class="btn sm" onclick="runDiag()" id="diagBtn">🔌 지금 확인</button></h2>
@@ -157,6 +158,12 @@
         <span class="muted small">점수 ≥ 매수 임계값이면 매수, ≤ 매도 임계값이면 매도/주의. 제안 수량·손절·목표가는 설정의 리스크 규칙으로 계산됩니다.</span>
         <div class="spacer"></div>
         <button class="btn sm ghost" onclick="showPage('settings')">관심종목 편집</button>
+      </div>
+      <div class="card" id="univCard">
+        <h2>오늘의 자동 선정 종목 <span class="muted small" id="univMeta"></span><span class="spacer"></span><button class="btn sm primary" onclick="runUniverse()" id="univBtn">🔄 지금 다시 선정</button></h2>
+        <p class="muted small">매 거래일 <b id="univTime">08:50</b>(개장 10분 전)에 거래량·시가총액·상승률 상위 후보를 일봉 지표(거래대금·변동성·모멘텀·거래량 급증·마감 강도)와 뉴스·섹터 감성으로 점수화해 상위 종목을 그날의 관심종목으로 자동 편성합니다. 장중에는 실시간 점수로 추천이 바뀌고, 30분마다 급등·거래량 상위 종목이 추가 편입됩니다.</p>
+        <div id="univStatus" class="muted small"></div>
+        <div class="scroll"><table class="tbl compact"><thead><tr><th>#</th><th>종목</th><th>선정점수</th><th>가격</th><th>거래대금(20일)</th><th>ATR%</th><th>5일</th><th>거래량비</th><th class="txt wide">선정 근거</th><th class="txt">출처</th></tr></thead><tbody id="univBody"><tr><td colspan="10" class="muted">아직 선정되지 않았습니다. 08:50 에 자동 실행되거나 위 버튼으로 지금 선정할 수 있습니다.</td></tr></tbody></table></div>
       </div>
       <div id="recoEmpty" class="card muted" style="display:none">엔진이 실행 중이 아닙니다. 홈에서 시뮬레이션 또는 실시간 시그널을 시작하세요.</div>
       <div class="grid-reco">
@@ -275,6 +282,7 @@
         <div class="card"><h2>전략</h2><div class="form" id="fStrategy"></div></div>
         <div class="card"><h2>퀀트 · 컨텍스트 · 규칙</h2><div class="form" id="fQuant"></div></div>
         <div class="card"><h2>알림 · 기타</h2><div class="form" id="fMisc"></div></div>
+        <div class="card span2"><h2>장전 자동 종목 선정</h2><div class="form" id="fPremarket"></div><p class="muted small">개장 전 지정 시각에 그날의 관심종목을 프로그램이 자동으로 짭니다. replace 는 고정 종목 + 선정 종목으로 교체(보유 중 종목은 유지), merge 는 기존 목록에 추가. '개장 자동 시작'을 켜면 09:00 에 엔진을 자동으로 띄웁니다.</p></div>
         <div class="card"><h2>챗봇 도우미 (선택)</h2><div class="form" id="fAssistant"></div><p class="muted small">API 키가 없어도 규칙 기반으로 명령을 처리합니다. Anthropic API 키를 넣으면 Claude 가 더 자유로운 표현을 이해합니다 (호출마다 비용 발생).</p></div>
       </div>
     </section>

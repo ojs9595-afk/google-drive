@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 log = logging.getLogger(__name__)
 
 STARTER_SUGGESTIONS = [
+    "오늘 종목 선정해줘",
     "코스닥 거래량 상위 20개 관심종목에 추가해줘",
     "지금 추천 종목 알려줘",
     "시뮬레이션 시작해",
@@ -86,6 +87,8 @@ HELP_TOPICS: list[dict] = [
      "answer": "설정 → 알림에 봇 토큰과 채팅 ID 를 넣으면 매수/매도 시그널과 체결이 텔레그램으로 전송됩니다. @BotFather 로 봇을 만들고, 봇에게 메시지를 보낸 뒤 getUpdates 로 chat_id 를 확인하세요."},
     {"keys": ["관심종목", "종목 추가", "종목 삭제", "유니버스", "스크리너"], "title": "관심종목 편집",
      "answer": "설정 → 관심종목에서 코드로 추가/삭제하거나, 챗봇에게 \"삼성전자 추가\", \"카카오 빼줘\", \"코스닥 거래량 상위 50개 추가\", \"코스피 시가총액 상위 30개 추가\"처럼 말하면 됩니다. 실행 중이면 즉시 구독됩니다. 설정의 스크리너를 켜면 장중 N분마다 거래량 상위 종목이 자동 편입됩니다."},
+    {"keys": ["선정", "자동 선정", "장전", "개장 전", "오늘 종목", "유니버스 자동"], "title": "장전 자동 종목 선정",
+     "answer": "매 거래일 개장 10분 전(기본 08:50)에 프로그램이 거래량·시가총액·상승률 상위 후보를 모아 일봉 지표(20일 거래대금, ATR 변동성, 5일 모멘텀, 20일선, RSI, 거래량 급증, 마감 강도)와 뉴스·섹터 감성으로 점수를 매겨 상위 N개(기본 30)를 그날의 관심종목으로 자동 편성합니다(보유 중 종목은 유지, 고정 종목은 항상 포함). 장중에는 실시간 점수로 추천이 바뀌고 30분마다 급등·거래량 상위 종목이 추가 편입됩니다. 설정 → 장전 자동 종목 선정에서 시각·개수·교체/추가 방식·개장 자동 시작을 조정하고, 추천 종목 페이지 상단이나 챗봇(\"오늘 종목 선정해줘\")으로 즉시 실행할 수 있습니다."},
     {"keys": ["챗봇", "도우미", "claude", "클로드", "ai"], "title": "챗봇 도우미",
      "answer": "이 도우미는 인터넷 없이 규칙으로 명령을 해석합니다. 설정 → assistant.api_key 에 Anthropic API 키를 넣으면 Claude 가 같은 기능을 도구로 사용해 더 자유로운 표현을 이해합니다. 할 수 있는 일: 관심종목 편집, 상위 종목 편입, 엔진 시작/정지, 자동매매 전환, 전량 청산, 설정 변경, 추천/보유/수익률/상태 조회, 백테스트, 뉴스 수집, 연결 진단, 사용법 안내."},
 ]
@@ -148,6 +151,11 @@ class Assistant:
 
     def _one(self, t: str, confirm: bool) -> ChatResult:
         low = t.lower().replace(" ", "")
+        # --- 장전 자동 선정 ---
+        if any(k in low for k in ("선정", "오늘종목", "오늘의종목", "종목뽑", "종목골라", "종목추려")):
+            if any(k in low for k in ("보여", "알려", "결과", "뭐", "목록", "리스트")) and not any(k in low for k in ("다시", "지금", "해줘", "실행")):
+                return self.tool_universe_show()
+            return self.tool_universe_run()
         # --- 관심종목: 상위 N개 ---
         m_top = re.search(r"(상위|top)\s*(\d+)", t, re.I) or re.search(r"(\d+)\s*(개|종목)", t)
         wants_add = any(k in low for k in ("추가", "넣", "편입", "담아", "포함", "등록"))
@@ -392,6 +400,26 @@ class Assistant:
         closed = self.ctl.close_all()
         return ChatResult(f"{closed}개 포지션 청산 요청을 보냈습니다.", actions=["close_all"])
 
+    def tool_universe_run(self) -> ChatResult:
+        try:
+            info = self.ctl.premarket_run(force=True, wait=True)
+        except Exception as e:
+            return ChatResult(f"종목 선정 실패: {e}")
+        if info["status"] == "error":
+            return ChatResult(f"종목 선정 실패: {info['error']}")
+        if info["status"] == "running":
+            return ChatResult("종목 선정을 시작했습니다 (30초~1분). 잠시 후 \"선정 종목 보여줘\"라고 물어보세요.", suggestions=["선정 종목 보여줘"], data={"navigate": "reco"})
+        return self.tool_universe_show(prefix="오늘의 종목을 새로 선정해 관심종목에 반영했습니다.\n")
+
+    def tool_universe_show(self, prefix: str = "") -> ChatResult:
+        info = self.ctl.selection_info()
+        sel = info.get("selection")
+        if not sel or not sel.get("picks"):
+            return ChatResult(f"아직 오늘 선정된 종목이 없습니다 (자동 실행 {info['next_run']}). \"오늘 종목 선정해줘\"라고 하면 지금 선정합니다.", suggestions=["오늘 종목 선정해줘"])
+        lines = [f"{i + 1}. {p['name']}({p['code']}) {p['score']:.0f}점 — {' · '.join(p['reasons'][:4])}" for i, p in enumerate(sel["picks"][:15])]
+        more = f"\n… 외 {len(sel['picks']) - 15}종목" if len(sel["picks"]) > 15 else ""
+        return ChatResult(prefix + f"{sel['date']} {sel['ts']} 선정 {len(sel['picks'])}종목 (후보 {sel['candidates']}, 제외 {sel['excluded']}, 모드 {sel['mode']}):\n" + "\n".join(lines) + more + "\n\n장중에는 실시간 점수에 따라 추천이 바뀝니다. 투자 판단과 손실은 사용자 책임입니다.", data={"navigate": "reco"})
+
     def tool_status(self) -> ChatResult:
         st = self.ctl.status()
         lines = [f"- 시장: {'정규장 진행 중' if st['market_open'] else '장 마감'}"]
@@ -530,6 +558,8 @@ class Assistant:
         {"name": "get_news", "description": "뉴스·거시 컨텍스트 요약. fetch=true 면 지금 수집.", "input_schema": {"type": "object", "properties": {"fetch": {"type": "boolean"}}}},
         {"name": "diagnose_connections", "description": "인터넷 데이터 소스 연결 진단.", "input_schema": {"type": "object", "properties": {}}},
         {"name": "help", "description": "프로그램 사용법 문서에서 주제 검색.", "input_schema": {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}},
+        {"name": "select_universe", "description": "오늘의 종목을 프로그램 로직으로 새로 선정해 관심종목에 반영한다 (장전 자동 선정과 동일).", "input_schema": {"type": "object", "properties": {}}},
+        {"name": "show_universe", "description": "오늘 자동 선정된 종목 목록과 근거.", "input_schema": {"type": "object", "properties": {}}},
     ]
 
     def _run_tool(self, name: str, inp: dict, confirm: bool) -> ChatResult:
@@ -570,6 +600,10 @@ class Assistant:
             return self.tool_diagnose()
         if name == "help":
             return self.tool_help(str(inp.get("question", "")))
+        if name == "select_universe":
+            return self.tool_universe_run()
+        if name == "show_universe":
+            return self.tool_universe_show()
         return ChatResult(f"알 수 없는 도구: {name}")
 
     def _system_prompt(self) -> str:

@@ -43,6 +43,7 @@ function showPage(p) {
   if (p === 'backtest') pollBacktest();
   if (p === 'logs') pollLogs();
   if (p === 'dash' || p === 'reco') pollState();
+  if (p === 'reco') loadUniverse();
   if (p === 'perf') loadPerf();
 }
 
@@ -65,6 +66,8 @@ async function pollStatus() {
     const al = $('homeAlert');
     if (status.last_error && !status.running) { al.style.display = ''; al.textContent = '마지막 오류: ' + status.last_error; } else al.style.display = 'none';
     $('sysinfo').textContent = `설정 파일: ${status.config_path} · 관심종목 ${status.watchlist_count}개`;
+    const pm = status.premarket || {};
+    $('pmInfo').textContent = pm.enabled ? `장전 자동 선정: ${pm.today_done ? `오늘 ${pm.picks}종목 선정 완료` : (pm.status === 'running' ? '선정 진행 중…' : '오늘 미실행')} · 다음 실행 ${pm.next_run} (${pm.time})` : '장전 자동 선정: 꺼짐 (설정에서 켤 수 있음)';
     const ca = $('cfgAlert'); if (status.config_error) { ca.style.display = ''; ca.textContent = '⚠ ' + status.config_error + ' — 기본 설정으로 실행 중입니다. 설정 탭에서 저장하면 파일이 다시 만들어집니다.'; } else ca.style.display = 'none';
     $('dashStatus').textContent = status.running ? status.engine_status : '엔진이 실행 중이 아닙니다. 홈에서 시작하세요.';
   } catch (e) { $('engineText').textContent = '서버 연결 끊김'; $('enginePill').className = 'engine-pill err'; }
@@ -152,6 +155,25 @@ function recoCard(r, kind) {
   return `<div class="reco ${kind}" onclick="openChart('${r.code}')" title="차트 보기"><div class="score ${cls(r.score)}">${r.score >= 0 ? '+' : ''}${r.score.toFixed(0)}<small>${esc(r.label)} · ${esc(r.strength)}</small></div><div class="body"><h4>${esc(r.name)}<span>${r.code}</span> <span class="${cls(r.change_pct)}" style="font-size:13px">${fmtWon(r.price)} (${r.change_pct >= 0 ? '+' : ''}${num(r.change_pct, 2)}%)</span> <span class="tag">${r.regime === 'trend' ? '추세장' : r.regime === 'range' ? '횡보장' : '-'}</span>${r.has_position ? ' <span class="tag">보유중</span>' : ''}</h4><div class="why">${esc(r.reasons.join(' · ')) || '-'}</div>${r.blocked ? `<div class="blocked">⏸ 진입 보류: ${esc(r.blocked)}</div>` : ''}</div><div class="plan">${planHtml}<br><span class="muted">${r.ts}</span></div></div>`;
 }
 function openChart(code) { showPage('chart'); const sel = $('chartCode'); setTimeout(() => { if ([...sel.options].some(o => o.value === code)) { sel.value = code; loadChart(true); } }, 200); }
+let univTimer = null;
+async function loadUniverse() {
+  try {
+    const d = await api('/api/universe');
+    $('univTime').textContent = d.time;
+    $('univMeta').textContent = d.enabled ? `다음 자동 실행 ${d.next_run}` : '자동 선정 꺼짐';
+    const sel = d.selection;
+    $('univStatus').textContent = d.status === 'running' ? '선정 진행 중… (후보 종목 일봉 조회, 30초~1분)' : d.status === 'error' ? '오류: ' + d.error : sel ? `${sel.date} ${sel.ts} 선정 · 후보 ${sel.candidates} · 점수화 ${sel.scored} · 제외 ${sel.excluded} · 모드 ${sel.mode} · 데이터 ${sel.feed}` + (sel.errors && sel.errors.length ? ` · 오류 ${sel.errors.length}건` : '') : '';
+    $('univBtn').disabled = d.status === 'running';
+    if (sel && sel.picks && sel.picks.length) {
+      $('univBody').innerHTML = sel.picks.map((p, i) => `<tr style="cursor:pointer" onclick="openChart('${p.code}')"><td>${i + 1}</td><td>${esc(p.name)}<div class="muted small">${p.code}</div></td><td><b>${p.score.toFixed(0)}</b></td><td>${fmtWon(p.metrics.price)}</td><td>${(p.metrics.turnover20 / 1e8).toFixed(0)}억</td><td>${num(p.metrics.atr_pct, 1)}</td><td>${pct(p.metrics.ret5, 1)}</td><td>x${num(p.metrics.vol_ratio, 1)}</td><td class="txt">${esc(p.reasons.join(' · '))}</td><td class="txt">${esc((p.sources || []).join(', '))}</td></tr>`).join('');
+    } else if (d.status !== 'running') $('univBody').innerHTML = '<tr><td colspan="10" class="muted">아직 선정되지 않았습니다. 08:50 에 자동 실행되거나 위 버튼으로 지금 선정할 수 있습니다.</td></tr>';
+    clearTimeout(univTimer); if (d.status === 'running' && page === 'reco') univTimer = setTimeout(loadUniverse, 2000);
+  } catch (e) { $('univStatus').textContent = e.message; }
+}
+async function runUniverse() {
+  try { await api('/api/universe/run', { force: true }); toast('오늘의 종목 선정을 시작했습니다 (30초~1분).'); $('univBtn').disabled = true; setTimeout(loadUniverse, 1500); }
+  catch (e) { toast(e.message, 'err'); }
+}
 function renderReco() {
   const s = state, rc = s && s.recommendations;
   $('recoEmpty').style.display = (s && s.running) ? 'none' : '';
@@ -358,6 +380,8 @@ async function loadConfig() {
   $('fStrategy').innerHTML = Object.keys(STRAT_LABELS).map(k => { const v = (cfg.strategy || {})[k]; const def = sch.strategy[k]; const isBool = typeof def === 'boolean'; return field('strategy.' + k, STRAT_LABELS[k], v == null ? def : v, isBool ? 'bool' : 'number'); }).join('');
   $('fQuant').innerHTML = field('quant.enabled', '퀀트 알파 사용', cfg.quant.enabled, 'bool') + field('quant.pairs_entry_z', '페어 진입 z-score', cfg.quant.pairs_entry_z == null ? 2.0 : cfg.quant.pairs_entry_z, 'number') + field('context.enabled', '거시·뉴스 컨텍스트 사용', cfg.context.enabled, 'bool') + field('context.stock_news', '종목별 구글뉴스 검색', cfg.context.stock_news == null ? true : cfg.context.stock_news, 'bool') + field('context.risk_off_index_drop_pct', '코스피 급락 진입 차단(%)', cfg.context.risk_off_index_drop_pct == null ? -1.5 : cfg.context.risk_off_index_drop_pct, 'number') + field('context.stock_news_block', '종목 악재 진입 차단 감성', cfg.context.stock_news_block == null ? -0.45 : cfg.context.stock_news_block, 'number') + field('rules.enabled', '규칙 엔진 사용', cfg.rules.enabled, 'bool') + field('rules.use_defaults', '기본 규칙 포함', cfg.rules.use_defaults, 'bool');
   $('fMisc').innerHTML = field('telegram.token', '텔레그램 봇 토큰', cfg.telegram.token, 'password') + envHint('telegram.token') + field('telegram.chat_id', '텔레그램 채팅 ID', cfg.telegram.chat_id) + envHint('telegram.chat_id') + field('naver.poll_interval', '네이버 폴링 주기(초)', cfg.naver.poll_interval, 'number') + field('log_dir', '로그 폴더', cfg.log_dir);
+  const pm = cfg.premarket || {};
+  $('fPremarket').innerHTML = field('premarket.enabled', '장전 자동 선정 사용', pm.enabled !== false, 'bool') + field('premarket.time', '선정 시각 (HH:MM, 개장 전)', pm.time || '08:50') + field('premarket.size', '선정 종목 수', pm.size || 30, 'number') + field('premarket.mode', '반영 방식', pm.mode || 'replace', 'select', [['replace', '교체 (고정 + 선정 종목)'], ['merge', '기존 목록에 추가']]) + field('premarket.pinned', '항상 포함할 종목코드 (쉼표 구분)', Array.isArray(pm.pinned) ? pm.pinned.join(',') : (pm.pinned || '')) + field('premarket.intraday_refresh_min', '장중 재선정 주기(분, 0=끔)', pm.intraday_refresh_min == null ? 30 : pm.intraday_refresh_min, 'number') + field('premarket.intraday_add', '장중 재선정 시 추가 수', pm.intraday_add == null ? 5 : pm.intraday_add, 'number') + field('premarket.max_universe', '최대 유니버스 크기', pm.max_universe || 60, 'number') + field('premarket.min_turnover', '최소 20일 평균 거래대금(원)', pm.min_turnover || 3000000000, 'number') + field('premarket.auto_start', '개장(09:00) 자동 시작', !!pm.auto_start, 'bool') + field('premarket.auto_start_feed', '자동 시작 피드', pm.auto_start_feed || 'naver', 'select', [['naver', '네이버 실시간'], ['kis', '한국투자증권']]) + field('premarket.auto_start_signal_only', '자동 시작 시 시그널만', pm.auto_start_signal_only !== false, 'bool') + field('premarket.run_on_engine_start', '엔진 시작 시 오늘 선정 없으면 먼저 선정', pm.run_on_engine_start !== false, 'bool');
   const as = cfg.assistant || {};
   $('fAssistant').innerHTML = field('assistant.api_key', 'Anthropic API 키 (선택)', as.api_key || '', 'password') + envHint('assistant.api_key') + field('assistant.model', '모델', as.model || 'claude-opus-5', 'select', [['claude-opus-5', 'Claude Opus 5 (기본)'], ['claude-sonnet-5', 'Claude Sonnet 5 (저렴)'], ['claude-haiku-4-5', 'Claude Haiku 4.5 (가장 저렴)']]) + field('assistant.effort', '추론 노력', as.effort || 'low', 'select', [['low', '낮음 (빠름)'], ['medium', '보통'], ['high', '높음']]);
   const im = document.querySelector('#page-settings [data-k="interval_min"]'); if (im) { im.min = '1'; im.step = '1'; }
@@ -392,6 +416,7 @@ function collectForm() {
     let o = out; for (let i = 0; i < path.length - 1; i++) { o[path[i]] = o[path[i]] || {}; o = o[path[i]]; }
     o[path[path.length - 1]] = v;
   });
+  if (out.premarket && typeof out.premarket.pinned === 'string') out.premarket.pinned = out.premarket.pinned.split(',').map(x => x.trim()).filter(Boolean);
   return out;
 }
 async function saveConfig() {

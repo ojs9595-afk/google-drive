@@ -261,6 +261,21 @@ def top_marketcap_codes(limit: int = 50, market: str = "KOSPI") -> list[tuple[st
     return seen[:limit]
 
 
+def top_rise_codes(limit: int = 60, market: str = "KOSPI") -> list[tuple[str, str]]:
+    """네이버 상승률 상위 페이지에서 (코드, 종목명) 추출."""
+    sosok = "0" if market.upper() == "KOSPI" else "1"
+    r = requests.get(f"https://finance.naver.com/sise/sise_rise.naver?sosok={sosok}", headers=_UA, timeout=10)
+    r.encoding = "euc-kr"
+    pat = re.compile(r'href="/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>')
+    seen: list[tuple[str, str]] = []
+    for code, name in pat.findall(r.text):
+        if code not in [c for c, _ in seen]:
+            seen.append((code, name.strip()))
+        if len(seen) >= limit:
+            break
+    return seen
+
+
 def search_stock(query: str) -> list[tuple[str, str]]:
     """종목명으로 (코드, 이름) 후보 검색 (네이버 자동완성, 비공식)."""
     url = f"https://ac.stock.naver.com/ac?q={requests.utils.quote(query)}&target=stock"

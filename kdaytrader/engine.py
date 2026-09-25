@@ -83,6 +83,8 @@ class TradingEngine:
         self.screener_cfg = screener_cfg or {}
         self._last_universe_refresh: datetime | None = None
         self._universe_thread = None
+        self.selector = None  # premarket.UniverseSelector (앱이 주입)
+        self.intraday_add = 5
         self._last_snapshot: dict | None = None
         self._offhours_logged = False
         self.web = None
@@ -290,6 +292,8 @@ class TradingEngine:
     def _maybe_refresh_universe(self, now: datetime) -> None:
         if self.universe_refresh_min <= 0 or self.feed.name == "sim":
             return
+        if not is_market_open(now):
+            return
         if self._last_universe_refresh is not None and (now - self._last_universe_refresh).total_seconds() < self.universe_refresh_min * 60:
             return
         if self._universe_thread is not None and self._universe_thread.is_alive():
@@ -299,12 +303,16 @@ class TradingEngine:
 
         def job():
             try:
-                from .screener import screen
+                if self.selector is not None:
+                    room = max(0, self.max_universe - len(self.watchlist))
+                    found = self.selector.intraday_candidates(set(self.watchlist), min(self.intraday_add, room)) if room else {}
+                else:
+                    from .screener import screen
 
-                sc = self.screener_cfg
-                found = screen(sc.get("source", "naver"), int(sc.get("limit", 15)), float(sc.get("min_price", 2000)), float(sc.get("max_price", 500000)), exclude_codes=set(self.watchlist))
-                if found:
-                    self.add_codes(found)
+                    sc = self.screener_cfg
+                    found = screen(sc.get("source", "naver"), int(sc.get("limit", 15)), float(sc.get("min_price", 2000)), float(sc.get("max_price", 500000)), exclude_codes=set(self.watchlist))
+                if found and self._loop is not None:
+                    self.run_on_loop(lambda: self.add_codes(found), timeout=120)
             except Exception as e:
                 log.warning("유니버스 갱신 실패: %s", e)
 

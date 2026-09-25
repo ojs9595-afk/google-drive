@@ -20,7 +20,8 @@ from urllib.parse import parse_qs, urlparse
 import yaml
 
 from . import __version__
-from .config import DEFAULTS, _merge, _normalize_watchlist, load_config, validate_config, yaml_dump, yaml_load
+from .config import DEFAULTS, _merge, _normalize_watchlist, build_premarket_params, load_config, validate_config, yaml_dump, yaml_load
+from .premarket import Selection, UniverseSelector, next_run_text, should_run_premarket
 from .factory import ConfigError, build_engine, make_feed_and_broker, resolve_watchlist
 from .indicators import compute_all
 from .market import KST, is_market_open, now_kst, seconds_until_open
@@ -30,7 +31,7 @@ from .strategy.ensemble import StrategyParams
 log = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).with_name("web")
 
-EDITABLE_SECTIONS = ["mode", "feed", "interval_min", "initial_cash", "auto_trade", "watchlist", "screener", "kis", "naver", "sim", "telegram", "strategy", "risk", "quant", "context", "rules", "web", "log_dir", "assistant"]
+EDITABLE_SECTIONS = ["mode", "feed", "interval_min", "initial_cash", "auto_trade", "watchlist", "screener", "kis", "naver", "sim", "telegram", "strategy", "risk", "quant", "context", "rules", "web", "log_dir", "assistant", "premarket"]
 
 
 def _clean(v):
@@ -118,6 +119,132 @@ class AppController:
         if logging.getLogger().level > logging.INFO or logging.getLogger().level == logging.NOTSET:
             logging.getLogger().setLevel(logging.INFO)
         self._lock = threading.Lock()
+        # 장전 자동 선정
+        self.selection: Selection | None = None
+        self.selection_status = "idle"  # idle | running | done | error
+        self.selection_error = ""
+        self._selection_thread: threading.Thread | None = None
+        self._auto_started_date = None
+        self._load_today_selection()
+        self._sched_stop = threading.Event()
+        self._sched = threading.Thread(target=self._scheduler_loop, daemon=True, name="scheduler")
+        self._sched.start()
+
+    # ----- 장전 선정 -----
+    def _premarket_params(self):
+        return build_premarket_params(self.cfg)
+
+    def _load_today_selection(self) -> None:
+        try:
+            sel = UniverseSelector(self.cfg, self._premarket_params(), None, None, "naver", str(self.cfg.get("log_dir", "logs"))).load_today()
+        except Exception:
+            sel = None
+        if sel is not None:
+            self.selection = sel
+            self.selection_status = "done"
+
+    def selection_info(self) -> dict:
+        p = self._premarket_params()
+        sel = self.selection
+        today = now_kst().strftime("%Y-%m-%d")
+        return {
+            "enabled": p.enabled, "time": p.time, "size": p.size, "mode": p.mode, "pinned": p.pinned, "auto_start": p.auto_start,
+            "status": self.selection_status, "error": self.selection_error, "next_run": next_run_text(p),
+            "today_done": bool(sel and sel.date == today), "selection": sel.to_dict() if sel else None,
+        }
+
+    def premarket_run(self, force: bool = False, feed: str | None = None, wait: bool = False) -> dict:
+        """장전 종목 선정을 실행(백그라운드)하고 관심종목에 반영한다."""
+        if self._selection_thread is not None and self._selection_thread.is_alive():
+            raise RuntimeError("종목 선정이 이미 진행 중입니다.")
+        p = self._premarket_params()
+        if not force and self.selection is not None and self.selection.date == now_kst().strftime("%Y-%m-%d"):
+            return self.selection_info()
+        feed_name = feed or (self.engine.feed.name if self.engine is not None and self.engine_running else self.cfg.get("feed", "naver"))
+        ctx = self.engine.context if self.engine is not None else getattr(self, "_news_ctx", None)
+        if ctx is None:
+            from .factory import build_context
+
+            ctx = self._news_ctx = build_context(self.cfg, self.cfg.get("watchlist") or {})
+        kis = None
+        if (self.cfg.get("kis") or {}).get("app_key") and feed_name != "sim":
+            try:
+                from .factory import make_kis_client
+
+                kis = make_kis_client(self.cfg)
+            except Exception:
+                kis = None
+        selector = UniverseSelector(self.cfg, p, ctx, kis, feed_name, str(self.cfg.get("log_dir", "logs")))
+        self.selection_status, self.selection_error = "running", ""
+
+        def job():
+            try:
+                if feed_name != "sim":
+                    try:  # 밤사이 뉴스 반영
+                        from .data.news import NewsCollector
+
+                        NewsCollector(ctx, stock_queries={}).fetch_once()
+                    except Exception:
+                        pass
+                sel = selector.select()
+                self.selection = sel
+                self._apply_selection(sel, p)
+                self.selection_status = "done"
+                log.info("장전 종목 선정 완료: %d종목 (후보 %d, 제외 %d)", len(sel.picks), sel.candidates, sel.excluded)
+            except Exception as e:
+                self.selection_status, self.selection_error = "error", f"{type(e).__name__}: {e}"
+                log.exception("장전 종목 선정 실패")
+
+        self._selection_thread = threading.Thread(target=job, daemon=True, name="premarket")
+        self._selection_thread.start()
+        if wait:
+            self._selection_thread.join(600)
+        return self.selection_info()
+
+    def _apply_selection(self, sel: Selection, p) -> None:
+        picked = {pk.code: pk.name for pk in sel.picks}
+        wl = dict(self.cfg.get("watchlist") or {})
+        pinned = {c: wl.get(c, picked.get(c, "")) for c in p.pinned}
+        if p.mode == "replace":
+            keep = {**pinned, **picked}
+            # 보유 중인 종목은 유지
+            if self.engine is not None and self.engine_running:
+                for c in list(self.engine.broker.positions()):
+                    keep.setdefault(c, wl.get(c, c))
+            remove = [c for c in wl if c not in keep]
+            add = {c: n for c, n in keep.items() if c not in wl}
+            self.watchlist_update(add=add, remove=remove)
+            # 이름 갱신
+        else:
+            self.watchlist_update(add={c: n for c, n in picked.items() if c not in wl})
+
+    def _scheduler_loop(self) -> None:
+        last_run: object = self.selection.date if self.selection else None
+        while not self._sched_stop.wait(20):
+            try:
+                p = self._premarket_params()
+                now = now_kst()
+                last_date = None
+                if isinstance(last_run, str):
+                    from datetime import datetime as _dt
+
+                    last_date = _dt.strptime(last_run, "%Y-%m-%d").date()
+                elif last_run is not None:
+                    last_date = last_run
+                if should_run_premarket(now, p, last_date) and self.selection_status != "running":
+                    log.info("장전 자동 종목 선정 시작 (%s)", p.time)
+                    self.premarket_run(force=True, feed=None)
+                    last_run = now.date()
+                if p.auto_start and p.enabled and now.weekday() < 5 and now.time() >= __import__("datetime").time(9, 0) and now.time() < __import__("datetime").time(15, 0):
+                    if not self.engine_running and self._auto_started_date != now.date() and (self.selection is None or self.selection.date == now.strftime("%Y-%m-%d")):
+                        self._auto_started_date = now.date()
+                        try:
+                            self.start(feed=p.auto_start_feed, mode="live" if p.auto_start_feed == "kis" else "paper", signal_only=p.auto_start_signal_only)
+                            log.info("개장 자동 시작: %s", p.auto_start_feed)
+                        except Exception as e:
+                            log.warning("개장 자동 시작 실패: %s", e)
+            except Exception as e:  # pragma: no cover
+                log.debug("스케줄러 오류: %s", e)
 
     # ----- 상태 -----
     @property
@@ -145,6 +272,7 @@ class AppController:
             "config_error": self.cfg.get("_config_error", ""),
             "watchlist_count": len(self.cfg.get("watchlist") or {}),
             "backtest": self.backtest.status,
+            "premarket": {"enabled": self._premarket_params().enabled, "time": self._premarket_params().time, "status": self.selection_status, "next_run": next_run_text(self._premarket_params()), "today_done": bool(self.selection and self.selection.date == now.strftime("%Y-%m-%d")), "picks": len(self.selection.picks) if self.selection else 0},
         }
 
     # ----- 엔진 -----
@@ -153,12 +281,23 @@ class AppController:
             if self.engine_running:
                 raise RuntimeError("엔진이 이미 실행 중입니다. 먼저 정지하세요.")
             self.cfg = load_config(str(self.config_path))
+            pp = self._premarket_params()
+            if pp.enabled and pp.run_on_engine_start and (feed or self.cfg.get("feed")) != "sim" and not (self.selection and self.selection.date == now_kst().strftime("%Y-%m-%d")) and now_kst().weekday() < 5:
+                try:
+                    self.premarket_run(force=True, feed=feed or self.cfg.get("feed"), wait=True)
+                except Exception as e:
+                    log.warning("시작 전 종목 선정 실패: %s", e)
             cfg = dict(self.cfg)
             if sim_speed is not None:
                 cfg["sim"] = {**(cfg.get("sim") or {}), "speed": float(sim_speed)}
             self.error = ""
             engine = build_engine(cfg, feed, mode, codes=codes, auto_trade=(False if signal_only else None), use_dashboard=False, use_news=use_news)
             engine._stop_requested = False  # 시작 직전에만 초기화 (워밍업 중 정지 요청이 무시되지 않도록)
+            p = self._premarket_params()
+            engine.selector = UniverseSelector(cfg, p, engine.context, None, engine.feed.name, str(cfg.get("log_dir", "logs")))
+            engine.universe_refresh_min = int(p.intraday_refresh_min) if p.enabled else engine.universe_refresh_min
+            engine.max_universe = max(engine.max_universe, int(p.max_universe))
+            engine.intraday_add = int(p.intraday_add)
             self.engine = engine
             self.run_opts = {"feed": engine.feed.name, "mode": engine.mode, "signal_only": signal_only, "codes": list(engine.watchlist.keys()), "news": use_news}
             self.started_at = time.time()
@@ -641,6 +780,8 @@ class AppServer:
                         return self._json({"result": ctl.screen(q.get("source", "naver"), int(q.get("limit", 15)))})
                     if u.path == "/api/diagnose":
                         return self._json(ctl.diagnose())
+                    if u.path == "/api/universe":
+                        return self._json(ctl.selection_info())
                     if u.path == "/api/chat/suggestions":
                         from .assistant import STARTER_SUGGESTIONS
 
@@ -681,6 +822,8 @@ class AppServer:
                         return self._json(ctl.chat(str(body.get("message", "")), body.get("history") or [], bool(body.get("confirm"))))
                     if u.path == "/api/watchlist":
                         return self._json(ctl.watchlist_update(body.get("add") or {}, body.get("remove") or []))
+                    if u.path == "/api/universe/run":
+                        return self._json(ctl.premarket_run(force=bool(body.get("force", True)), feed=body.get("feed"), wait=bool(body.get("wait"))))
                     if u.path == "/api/watchlist/top":
                         return self._json(ctl.watchlist_add_top(str(body.get("market", "ALL")), int(body.get("n", 30)), str(body.get("by", "volume"))))
                     if u.path == "/api/backtest":
@@ -713,6 +856,10 @@ class AppServer:
             self.stop()
 
     def stop(self) -> None:
+        try:
+            self.ctl._sched_stop.set()
+        except Exception:
+            pass
         try:
             self.ctl.stop(5)
         except Exception:

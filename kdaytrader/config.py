@@ -97,6 +97,7 @@ DEFAULTS: dict[str, Any] = {
     "quant": {"enabled": True, "pairs": {}},
     "rules": {"enabled": True, "use_defaults": True, "triggers": []},
     "assistant": {"provider": "claude", "api_key": "${ANTHROPIC_API_KEY:-}", "model": "claude-opus-5", "effort": "low"},
+    "premarket": {"enabled": True, "time": "08:50", "size": 30, "mode": "replace", "pinned": [], "intraday_refresh_min": 30, "intraday_add": 5, "max_universe": 60, "auto_start": False, "auto_start_feed": "naver", "auto_start_signal_only": True, "run_on_engine_start": True},
     "web": {"enabled": True, "host": "127.0.0.1", "port": 8787},
     "context": {"enabled": True},
     "log_dir": "logs",
@@ -169,6 +170,11 @@ def validate_config(cfg: dict) -> None:
     build_quant_params(cfg)
     build_pairs(cfg)
     build_rules(cfg)
+    pm = build_premarket_params(cfg)
+    if not re.match(r"^\d{1,2}:\d{2}$", str(pm.time)):
+        raise ValueError("premarket.time: HH:MM 형식이어야 합니다")
+    if pm.size < 1 or pm.mode not in ("replace", "merge"):
+        raise ValueError("premarket.size 는 1 이상, mode 는 replace|merge")
 
 
 def load_config(path: str | None = None) -> dict:
@@ -258,3 +264,17 @@ def build_rules(cfg: dict) -> RuleSet | None:
     rs = default_ruleset() if r.get("use_defaults", True) else RuleSet()
     rs.triggers.extend(build_ruleset(r.get("triggers")).triggers)
     return rs
+
+
+def build_premarket_params(cfg: dict):
+    from .premarket import PremarketParams
+
+    allowed = {f.name for f in fields(PremarketParams)}
+    kwargs = {}
+    for k, v in (cfg.get("premarket") or {}).items():
+        if k in allowed:
+            kwargs[k] = v
+    if isinstance(kwargs.get("pinned"), str):
+        kwargs["pinned"] = [c.strip() for c in kwargs["pinned"].split(",") if c.strip()]
+    kwargs["pinned"] = [str(c).zfill(6) for c in (kwargs.get("pinned") or [])]
+    return PremarketParams(**kwargs)
