@@ -1,0 +1,100 @@
+# kdaytrader 설정 예시. 복사해서 config.yaml 로 저장 후 수정하세요.
+# ${ENV_VAR} 또는 ${ENV_VAR:-기본값} 형식으로 환경변수를 참조할 수 있습니다.
+
+mode: paper          # paper(모의 체결) | live(한국투자증권 실주문 — 반드시 kis.paper 로 모의투자 먼저!)
+feed: naver          # sim(시뮬레이션) | naver(네이버 폴링, 키 불필요) | kis(한국투자증권 웹소켓)
+interval_min: 1      # 시그널 캔들 주기(분)
+initial_cash: 10000000
+auto_trade: true     # false 면 주문 없이 시그널 알림만
+
+watchlist:           # 코드: 종목명 (스크리너가 켜져 있으면 여기에 추가로 합쳐짐)
+  "005930": 삼성전자
+  "000660": SK하이닉스
+  "005380": 현대차
+  "000270": 기아
+  "035420": NAVER
+  "035720": 카카오
+  "068270": 셀트리온
+  "373220": LG에너지솔루션
+  "006400": 삼성SDI
+  "105560": KB금융
+
+screener:
+  enabled: false     # 장중 거래량 상위 종목을 자동으로 유니버스에 추가
+  source: naver      # naver | kis
+  limit: 15
+  min_price: 2000
+  max_price: 500000
+
+kis:                 # 한국투자증권 Open API (https://apiportal.koreainvestment.com)
+  app_key: ${KIS_APP_KEY:-}
+  app_secret: ${KIS_APP_SECRET:-}
+  account: ${KIS_ACCOUNT:-}     # 예: 12345678-01
+  paper: true                    # true = 모의투자 서버
+
+naver:
+  poll_interval: 1.5
+
+sim:
+  speed: 60          # 1분봉을 1초에 재생. 0 이면 최대 속도
+  history_days: 3
+  seed: 42
+
+telegram:            # 비우면 비활성
+  token: ${TELEGRAM_BOT_TOKEN:-}
+  chat_id: ${TELEGRAM_CHAT_ID:-}
+
+strategy:            # kdaytrader/strategy/ensemble.py 의 StrategyParams 필드
+  buy_threshold: 55
+  sell_threshold: -35
+  adx_trend: 25
+  require_above_vwap: true
+  max_rsi_entry: 78
+  orb_minutes: 30
+  # 가중치는 [추세장, 횡보장]
+  w_trend: [1.0, 0.5]
+  w_breakout: [1.2, 0.4]
+  w_reversion: [0.2, 1.2]
+  w_xs_momentum: [0.8, 0.4]
+  w_pairs: [0.3, 1.0]
+  w_micro: [0.8, 0.8]
+
+risk:                # kdaytrader/risk.py 의 RiskParams 필드
+  risk_per_trade: 0.01
+  max_position_pct: 0.30
+  max_positions: 4
+  atr_stop_mult: 1.5
+  take_profit_r: 2.0
+  trail_atr_mult: 1.2
+  partial_take_r: 1.5
+  daily_loss_limit_pct: 0.03
+  entry_start: "09:05"
+  entry_end: "14:50"
+  force_close: "15:12"
+  kelly_enabled: true
+
+quant:               # kdaytrader/strategy/quant.py 의 QuantParams 필드
+  enabled: true
+  pairs:             # 페어 트레이딩 상대 종목 (없으면 같은 섹터 종목을 자동 선택)
+    "005930": "000660"
+    "005380": "000270"
+  pairs_entry_z: 2.0
+  xs_lookback: 30
+
+context:             # 거시/섹터/뉴스 컨텍스트 (kdaytrader/context.py 의 ContextParams 필드 + 아래 항목)
+  enabled: true
+  news_poll_sec: 60
+  index_poll_sec: 5
+  stock_news: true   # 관심종목별 구글뉴스 검색 포함
+  risk_off_index_drop_pct: -1.5
+  stock_news_block: -0.45
+  stock_news_exit: -0.7
+  # rss:             # 기본 RSS 대신 사용할 목록
+  #   - {name: 연합뉴스 경제, url: https://www.yna.co.kr/rss/economy.xml}
+  sectors:           # 기본 섹터 사전에 추가/덮어쓰기
+    "247540": 2차전지
+  events:            # 예정 이벤트 전후 신규 진입 회피 (KST)
+    - {name: 한은 금통위, time: "10:00", before_min: 15, after_min: 30, date: 2026-10-23}
+    - {name: 미국 CPI 여파 개장, time: "09:00", before_min: 0, after_min: 10}
+
+log_dir: logs

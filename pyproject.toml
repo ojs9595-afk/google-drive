@@ -1,0 +1,19 @@
+[project]
+name = "kdaytrader"
+version = "0.1.0"
+description = "한국 주식 실시간 기술적 분석 데이트레이딩 시그널/자동매매 엔진"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "rich>=13.7",
+  "websockets>=12.0",
+  "requests>=2.31",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
