@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -35,28 +34,12 @@ def google_news_rss(query: str) -> str:
     return f"https://news.google.com/rss/search?q={quote(query)}+when:1d&hl=ko&gl=KR&ceid=KR:ko"
 
 
-_XML_ENC_RE = re.compile(rb'<\?xml[^>]*encoding=["\']([A-Za-z0-9._-]+)["\']', re.I)
-
-
 def parse_rss(text: str | bytes, source: str) -> list[tuple[datetime, str, str]]:
-    """(ts, title, link) 리스트. bytes 를 주면 XML 선언의 인코딩을 따른다 (euc-kr/cp949 선언도 처리)."""
+    """(ts, title, link) 리스트. bytes 를 주면 XML 선언의 인코딩을 따른다."""
     out = []
-    root = None
     try:
         root = ET.fromstring(text)
     except (ET.ParseError, ValueError):
-        if isinstance(text, bytes):
-            m = _XML_ENC_RE.search(text[:200])
-            enc = (m.group(1).decode("ascii", "ignore") if m else "utf-8")
-            try:
-                decoded = text.decode(enc, errors="replace")
-                decoded = re.sub(r'encoding=["\'][A-Za-z0-9._-]+["\']', 'encoding="utf-8"', decoded, count=1)
-                root = ET.fromstring(decoded.encode("utf-8"))
-            except Exception:
-                return out
-        else:
-            return out
-    if root is None:
         return out
     for item in root.iter("item"):
         title = (item.findtext("title") or "").strip()

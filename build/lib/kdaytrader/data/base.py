@@ -96,11 +96,6 @@ class DataFeed(HistoryProvider):
             if c not in self._codes:
                 self._codes.append(c)
 
-    def unsubscribe(self, codes: Iterable[str]) -> None:
-        for c in codes:
-            if c in self._codes:
-                self._codes.remove(c)
-
     @property
     def codes(self) -> list[str]:
         return list(self._codes)

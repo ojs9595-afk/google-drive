@@ -97,20 +97,3 @@ select,input[type=text],input[type=number],input[type=password]{border:1px solid
 .reco-empty{color:var(--muted);font-size:13px;padding:8px 2px}
 .side-foot .btn{color:var(--side-ink);background:rgba(255,255,255,.06);border-color:transparent}
 .side-foot .btn.danger{color:#fca5a5;border-color:rgba(252,165,165,.4)}
-
-/* ---- 챗봇 ---- */
-.chat-fab{position:fixed;right:22px;bottom:22px;width:54px;height:54px;border-radius:50%;border:0;background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;font-size:24px;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:40}
-.chat{position:fixed;right:0;top:0;bottom:0;width:min(420px,100vw);background:var(--card);border-left:1px solid var(--line);box-shadow:-8px 0 24px rgba(0,0,0,.15);display:flex;flex-direction:column;z-index:45;transform:translateX(105%);transition:transform .2s}
-.chat.open{transform:none}
-.chat header{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
-.chat-msgs{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
-.msg{max-width:92%;padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
-.msg.user{align-self:flex-end;background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;border-bottom-right-radius:4px}
-.msg.bot{align-self:flex-start;background:var(--chip);border-bottom-left-radius:4px}
-.msg.bot b{font-weight:700}.msg .src{display:block;font-size:10px;color:var(--muted);margin-top:4px}
-.msg .confirm{display:flex;gap:6px;margin-top:8px}
-.chat-chips{display:flex;gap:6px;flex-wrap:wrap;padding:6px 14px;border-top:1px solid var(--line)}
-.chat-chips button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer}
-.chat-chips button:hover{border-color:var(--accent)}
-.chat-input{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}.chat-input input{flex:1}
-.typing{color:var(--muted);font-size:12px;padding:0 14px 6px}

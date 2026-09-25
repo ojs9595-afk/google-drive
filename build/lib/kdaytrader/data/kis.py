@@ -354,15 +354,6 @@ class KISFeed(DataFeed):
     def _sub_msg(self, code: str, key: str) -> str:
         return json.dumps({"header": {"approval_key": key, "custtype": "P", "tr_type": "1", "content-type": "utf-8"}, "body": {"input": {"tr_id": "H0STCNT0", "tr_key": code}}})
 
-    def unsubscribe(self, codes) -> None:
-        gone = [c for c in codes if c in self._codes]
-        super().unsubscribe(codes)
-        if self._ws is not None and self._loop is not None and gone:
-            key = self.client.approval_key()
-            for c in gone:
-                msg = json.dumps({"header": {"approval_key": key, "custtype": "P", "tr_type": "2", "content-type": "utf-8"}, "body": {"input": {"tr_id": "H0STCNT0", "tr_key": c}}})
-                asyncio.run_coroutine_threadsafe(self._ws.send(msg), self._loop)
-
     def subscribe(self, codes) -> None:
         new = [c for c in codes if c not in self._codes]
         super().subscribe(codes)

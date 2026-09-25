@@ -30,7 +30,7 @@ from .strategy.ensemble import StrategyParams
 log = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).with_name("web")
 
-EDITABLE_SECTIONS = ["mode", "feed", "interval_min", "initial_cash", "auto_trade", "watchlist", "screener", "kis", "naver", "sim", "telegram", "strategy", "risk", "quant", "context", "rules", "web", "log_dir", "assistant"]
+EDITABLE_SECTIONS = ["mode", "feed", "interval_min", "initial_cash", "auto_trade", "watchlist", "screener", "kis", "naver", "sim", "telegram", "strategy", "risk", "quant", "context", "rules", "web", "log_dir"]
 
 
 def _clean(v):
@@ -455,63 +455,6 @@ class AppController:
             trades = [t for t in trades if t["exit_ts"] >= cutoff]
         return trades_to_csv(trades)
 
-    # ----- 관심종목 / 설정 (챗봇·UI 공용) -----
-    def watchlist_update(self, add: dict[str, str] | None = None, remove: list[str] | None = None) -> dict:
-        """config.yaml 관심종목을 갱신하고, 엔진이 실행 중이면 즉시 구독/해제한다."""
-        add = {str(k).zfill(6): (v or "") for k, v in (add or {}).items() if str(k).strip()}
-        remove = [str(c).zfill(6) for c in (remove or [])]
-        raw = self._raw_config()
-        wl = _normalize_watchlist(raw.get("watchlist") if "watchlist" in raw else self.cfg.get("watchlist"))
-        added = {c: n for c, n in add.items() if c not in wl}
-        wl.update(add)
-        kept = []
-        eng = self.engine
-        if eng is not None and self.engine_running:
-            removed_now, kept = eng.run_on_loop(lambda: eng.remove_codes(remove)) if remove else ([], [])
-            remove = [c for c in remove if c not in kept]
-        removed = [c for c in remove if c in wl]
-        for c in removed:
-            wl.pop(c, None)
-        raw["watchlist"] = wl
-        self.config_path.write_text(yaml_dump(raw), encoding="utf-8")
-        self.cfg = load_config(str(self.config_path))
-        if eng is not None and self.engine_running and added:
-            try:
-                eng.run_on_loop(lambda: eng.add_codes(added), timeout=60)
-            except Exception as e:
-                log.warning("실행 중 종목 추가 실패: %s", e)
-        return {"added": added, "removed": removed, "kept_positions": kept, "total": len(wl), "watchlist": wl}
-
-    def set_settings(self, values: dict[str, object]) -> dict:
-        """'risk.atr_stop_mult' 같은 점 경로로 설정을 바꾸고 저장한다."""
-        raw = self._raw_config()
-        applied = {}
-        for path, v in values.items():
-            parts = str(path).split(".")
-            if parts[0] not in EDITABLE_SECTIONS:
-                raise RuntimeError(f"변경할 수 없는 설정: {path}")
-            o = raw
-            for k in parts[:-1]:
-                if not isinstance(o.get(k), dict):
-                    o[k] = {}
-                o = o[k]
-            o[parts[-1]] = v
-            applied[path] = v
-        try:
-            load_config_from_dict(raw)
-        except (ValueError, TypeError) as e:
-            raise RuntimeError(f"설정 값 오류: {e}")
-        self.config_path.write_text(yaml_dump(raw), encoding="utf-8")
-        self.cfg = load_config(str(self.config_path))
-        return applied
-
-    def chat(self, message: str, history: list[dict] | None = None, confirm: bool = False) -> dict:
-        from .assistant import Assistant
-
-        if getattr(self, "_assistant", None) is None:
-            self._assistant = Assistant(self)
-        return self._assistant.handle(message, history or [], confirm)
-
     def diagnose(self) -> dict:
         """인터넷 데이터 소스 연결 진단 (각 항목 개별 타임아웃)."""
         from .diagnostics import run_diagnostics
@@ -523,7 +466,7 @@ class AppController:
         return {"records": recs[-300:], "last_id": self.loghandler._seq}
 
 
-SECRET_KEYS = {"kis": ("app_key", "app_secret", "account"), "telegram": ("token", "chat_id"), "assistant": ("api_key",)}
+SECRET_KEYS = {"kis": ("app_key", "app_secret", "account"), "telegram": ("token", "chat_id")}
 
 
 def load_config_from_dict(raw: dict) -> dict:
@@ -622,10 +565,6 @@ class AppServer:
                         return self._json({"result": ctl.screen(q.get("source", "naver"), int(q.get("limit", 15)))})
                     if u.path == "/api/diagnose":
                         return self._json(ctl.diagnose())
-                    if u.path == "/api/chat/suggestions":
-                        from .assistant import STARTER_SUGGESTIONS
-
-                        return self._json({"suggestions": STARTER_SUGGESTIONS, "llm": bool((ctl.cfg.get("assistant") or {}).get("api_key"))})
                     if u.path == "/api/performance":
                         return self._json(ctl.performance(int(q.get("days", 90)) or None, q.get("sim") == "1"))
                     if u.path == "/api/performance.csv":
@@ -658,10 +597,6 @@ class AppServer:
                         return self._json({"closed": ctl.close_all()})
                     if u.path == "/api/config":
                         return self._json(ctl.config_save(body))
-                    if u.path == "/api/chat":
-                        return self._json(ctl.chat(str(body.get("message", "")), body.get("history") or [], bool(body.get("confirm"))))
-                    if u.path == "/api/watchlist":
-                        return self._json(ctl.watchlist_update(body.get("add") or {}, body.get("remove") or []))
                     if u.path == "/api/backtest":
                         ctl.backtest_start(int(body.get("days", 10)), body.get("codes"), body.get("feed", "sim"), int(body.get("seed", 1)))
                         return self._json({"ok": True})

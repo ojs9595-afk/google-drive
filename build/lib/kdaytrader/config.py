@@ -98,7 +98,6 @@ DEFAULTS: dict[str, Any] = {
     "risk": {},
     "quant": {"enabled": True, "pairs": {}},
     "rules": {"enabled": True, "use_defaults": True, "triggers": []},
-    "assistant": {"provider": "claude", "api_key": "${ANTHROPIC_API_KEY:-}", "model": "claude-opus-5", "effort": "low"},
     "web": {"enabled": True, "host": "127.0.0.1", "port": 8787},
     "context": {"enabled": True},
     "log_dir": "logs",

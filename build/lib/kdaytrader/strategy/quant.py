@@ -55,9 +55,7 @@ class MicroState:
     samples: int = 0
 
     def update(self, tick, alpha: float) -> None:
-        updated = False
         if tick.ask_qty > 0 and tick.bid_qty > 0:
-            updated = True
             obi = (tick.bid_qty - tick.ask_qty) / (tick.bid_qty + tick.ask_qty)
             self.obi = obi if self.samples == 0 else (1 - alpha) * self.obi + alpha * obi
             if tick.ask > 0 and tick.bid > 0:
@@ -67,7 +65,6 @@ class MicroState:
                 dev = (microprice - mid) / spread
                 self.micro_dev = dev if self.samples == 0 else (1 - alpha) * self.micro_dev + alpha * dev
         if tick.buy_vol > 0 or tick.sell_vol > 0:
-            updated = True
             db = max(0, tick.buy_vol - self.last_buy)
             ds = max(0, tick.sell_vol - self.last_sell)
             self.last_buy, self.last_sell = tick.buy_vol, tick.sell_vol
@@ -75,10 +72,8 @@ class MicroState:
                 tfi = (db - ds) / (db + ds)
                 self.tfi = tfi if self.samples == 0 else (1 - alpha) * self.tfi + alpha * tfi
         if tick.strength > 0:
-            updated = True
             self.strength = tick.strength if self.samples == 0 else (1 - alpha) * self.strength + alpha * tick.strength
-        if updated:  # 호가/체결 정보가 없는 틱(네이버 폴링)은 표본으로 세지 않는다
-            self.samples += 1
+        self.samples += 1
 
     @property
     def available(self) -> bool:
@@ -257,7 +252,7 @@ class QuantSignals:
 
         # 3) 페어 스프레드 (통계적 차익거래)
         partner = self.partner_of(code)
-        if partner and self.store.has(partner):
+        if partner:
             pdf = self.store.df(partner, n=p.pairs_window + 5)
             if len(pdf) >= 40:
                 y = close.iloc[-p.pairs_window:]

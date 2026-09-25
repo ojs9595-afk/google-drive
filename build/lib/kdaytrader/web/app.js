@@ -358,8 +358,6 @@ async function loadConfig() {
   $('fStrategy').innerHTML = Object.keys(STRAT_LABELS).map(k => { const v = (cfg.strategy || {})[k]; const def = sch.strategy[k]; const isBool = typeof def === 'boolean'; return field('strategy.' + k, STRAT_LABELS[k], v == null ? def : v, isBool ? 'bool' : 'number'); }).join('');
   $('fQuant').innerHTML = field('quant.enabled', '퀀트 알파 사용', cfg.quant.enabled, 'bool') + field('quant.pairs_entry_z', '페어 진입 z-score', cfg.quant.pairs_entry_z == null ? 2.0 : cfg.quant.pairs_entry_z, 'number') + field('context.enabled', '거시·뉴스 컨텍스트 사용', cfg.context.enabled, 'bool') + field('context.stock_news', '종목별 구글뉴스 검색', cfg.context.stock_news == null ? true : cfg.context.stock_news, 'bool') + field('context.risk_off_index_drop_pct', '코스피 급락 진입 차단(%)', cfg.context.risk_off_index_drop_pct == null ? -1.5 : cfg.context.risk_off_index_drop_pct, 'number') + field('context.stock_news_block', '종목 악재 진입 차단 감성', cfg.context.stock_news_block == null ? -0.45 : cfg.context.stock_news_block, 'number') + field('rules.enabled', '규칙 엔진 사용', cfg.rules.enabled, 'bool') + field('rules.use_defaults', '기본 규칙 포함', cfg.rules.use_defaults, 'bool');
   $('fMisc').innerHTML = field('telegram.token', '텔레그램 봇 토큰', cfg.telegram.token, 'password') + envHint('telegram.token') + field('telegram.chat_id', '텔레그램 채팅 ID', cfg.telegram.chat_id) + envHint('telegram.chat_id') + field('naver.poll_interval', '네이버 폴링 주기(초)', cfg.naver.poll_interval, 'number') + field('log_dir', '로그 폴더', cfg.log_dir);
-  const as = cfg.assistant || {};
-  $('fAssistant').innerHTML = field('assistant.api_key', 'Anthropic API 키 (선택)', as.api_key || '', 'password') + envHint('assistant.api_key') + field('assistant.model', '모델', as.model || 'claude-opus-5', 'select', [['claude-opus-5', 'Claude Opus 5 (기본)'], ['claude-sonnet-5', 'Claude Sonnet 5 (저렴)'], ['claude-haiku-4-5', 'Claude Haiku 4.5 (가장 저렴)']]) + field('assistant.effort', '추론 노력', as.effort || 'low', 'select', [['low', '낮음 (빠름)'], ['medium', '보통'], ['high', '높음']]);
   const im = document.querySelector('#page-settings [data-k="interval_min"]'); if (im) { im.min = '1'; im.step = '1'; }
   renderWatch();
 }
@@ -401,37 +399,6 @@ async function pollLogs() {
 }
 function clearLogs() { $('logBox').innerHTML = ''; }
 
-/* ---------------- 챗봇 ---------------- */
-let chatHistory = [], chatOpen = false;
-function toggleChat(force) { chatOpen = force === undefined ? !chatOpen : !!force; $('chatPanel').classList.toggle('open', chatOpen); if (chatOpen) { $('chatText').focus(); if (!$('chatMsgs').childElementCount) chatWelcome(); } }
-function mdLite(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'); }
-function chatAdd(role, text, extra = {}) {
-  const box = $('chatMsgs'); const el = document.createElement('div'); el.className = 'msg ' + role;
-  el.innerHTML = role === 'bot' ? mdLite(text) : esc(text);
-  if (extra.source === 'claude') el.innerHTML += '<span class="src">Claude</span>';
-  if (extra.needs_confirm) { const c = document.createElement('div'); c.className = 'confirm'; const ok = document.createElement('button'); ok.className = 'btn sm danger'; ok.textContent = '✔ ' + extra.needs_confirm.message; ok.onclick = () => { c.remove(); sendChatText(extra.needs_confirm.payload, true); }; const no = document.createElement('button'); no.className = 'btn sm ghost'; no.textContent = '취소'; no.onclick = () => c.remove(); c.append(ok, no); el.appendChild(c); }
-  box.appendChild(el); box.scrollTop = box.scrollHeight;
-  if (role !== 'sys') { chatHistory.push({ role: role === 'bot' ? 'assistant' : 'user', content: text }); if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20); }
-}
-function chatChips(list) { $('chatChips').innerHTML = (list || []).map(s => `<button onclick="sendChatText(${JSON.stringify(s).replace(/"/g, '&quot;')})">${esc(s)}</button>`).join(''); }
-async function chatWelcome() {
-  try { const d = await api('/api/chat/suggestions'); chatChips(d.suggestions); $('chatMode').textContent = d.llm ? 'Claude 연동' : '규칙 기반'; } catch (e) { chatChips([]); }
-  chatAdd('bot', '안녕하세요! 관심종목 편집, 엔진 시작/정지, 설정 변경, 추천·수익률 조회, 사용법 질문을 도와드립니다.\n예) "코스닥 거래량 상위 20개 추가해줘", "시뮬레이션 시작", "손절 ATR 배수 2로", "시그널 점수는 뭐야?"');
-  chatHistory = [];
-}
-function sendChat(ev) { ev.preventDefault(); const t = $('chatText').value.trim(); if (!t) return; $('chatText').value = ''; sendChatText(t, false); }
-async function sendChatText(text, confirm) {
-  chatAdd('user', text); $('chatSend').disabled = true;
-  const typing = document.createElement('div'); typing.className = 'typing'; typing.textContent = '처리 중…'; $('chatMsgs').appendChild(typing);
-  try {
-    const r = await api('/api/chat', { message: text, history: chatHistory.slice(0, -1), confirm: !!confirm });
-    typing.remove(); chatAdd('bot', r.reply, { source: r.source, needs_confirm: r.needs_confirm }); chatChips(r.suggestions);
-    if (r.actions && r.actions.length) { pollStatus(); if (page === 'settings') loadConfig(); }
-    if (r.data && r.data.navigate && r.data.navigate !== page) showPage(r.data.navigate);
-  } catch (e) { typing.remove(); chatAdd('bot', '오류: ' + e.message); }
-  $('chatSend').disabled = false; $('chatText').focus();
-}
-
 /* ---------------- 루프 ---------------- */
 function redrawAll() { if (page === 'dash') renderDash(); if (page === 'reco') renderReco(); if (page === 'chart') renderChart(); if (page === 'backtest' && window._bt) renderBacktest(window._bt); if (page === 'perf' && perfData) renderPerf(perfData); }
 window.addEventListener('resize', redrawAll);
@@ -442,5 +409,4 @@ window.addEventListener('resize', redrawAll);
   setInterval(pollStatus, 2000);
   setInterval(pollState, 1000);
   setInterval(() => { if (page === 'chart' && status.running) loadChart(false); }, 2000);
-  document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && chatOpen) toggleChat(false); });
 })();

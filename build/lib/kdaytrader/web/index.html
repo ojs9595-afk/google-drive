@@ -22,7 +22,6 @@
       <button data-page="news"><i>📰</i><span>뉴스·거시</span></button>
       <button data-page="settings"><i>⚙️</i><span>설정</span></button>
       <button data-page="logs"><i>📜</i><span>로그</span></button>
-      <button onclick="toggleChat(true)" id="navChat"><i>💬</i><span>도우미 (챗봇)</span></button>
     </nav>
     <div class="side-foot">
       <div class="engine-pill" id="enginePill"><span class="dot"></span><span id="engineText">엔진 대기</span></div>
@@ -273,7 +272,6 @@
         <div class="card"><h2>전략</h2><div class="form" id="fStrategy"></div></div>
         <div class="card"><h2>퀀트 · 컨텍스트 · 규칙</h2><div class="form" id="fQuant"></div></div>
         <div class="card"><h2>알림 · 기타</h2><div class="form" id="fMisc"></div></div>
-        <div class="card"><h2>챗봇 도우미 (선택)</h2><div class="form" id="fAssistant"></div><p class="muted small">API 키가 없어도 규칙 기반으로 명령을 처리합니다. Anthropic API 키를 넣으면 Claude 가 더 자유로운 표현을 이해합니다 (호출마다 비용 발생).</p></div>
       </div>
     </section>
 
@@ -284,13 +282,6 @@
     </section>
   </main>
 </div>
-<button class="chat-fab" id="chatFab" onclick="toggleChat()" title="도우미 열기">💬</button>
-<aside class="chat" id="chatPanel">
-  <header><b>💬 K-DayTrader 도우미</b><span class="muted small" id="chatMode">규칙 기반</span><span class="spacer"></span><button class="btn sm ghost" onclick="toggleChat(false)">✕</button></header>
-  <div class="chat-msgs" id="chatMsgs"></div>
-  <div class="chat-chips" id="chatChips"></div>
-  <form class="chat-input" onsubmit="sendChat(event)"><input type="text" id="chatText" placeholder="예: 코스닥 거래량 상위 20개 관심종목에 추가해줘" autocomplete="off"><button class="btn primary" type="submit" id="chatSend">보내기</button></form>
-</aside>
 <div id="toast" class="toast"></div>
 <div id="modal" class="modal" style="display:none"><div class="modal-box"><h3 id="modalTitle"></h3><p id="modalBody"></p><div class="row end"><button class="btn ghost" onclick="closeModal()">취소</button><button class="btn danger" id="modalOk">확인</button></div></div></div>
 <script src="/static/app.js"></script>

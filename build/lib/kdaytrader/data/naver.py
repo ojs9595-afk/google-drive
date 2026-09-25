@@ -237,56 +237,6 @@ def resample(candles: list[Candle], interval: int) -> list[Candle]:
     return out
 
 
-def top_marketcap_codes(limit: int = 50, market: str = "KOSPI") -> list[tuple[str, str]]:
-    """네이버 시가총액 상위 페이지(50개/페이지)에서 (코드, 종목명) 추출."""
-    sosok = "0" if market.upper() == "KOSPI" else "1"
-    pat = re.compile(r'href="/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>')
-    seen: list[tuple[str, str]] = []
-    page = 1
-    while len(seen) < limit and page <= 6:
-        url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
-        r = requests.get(url, headers=_UA, timeout=10)
-        r.encoding = "euc-kr"
-        found = 0
-        for code, name in pat.findall(r.text):
-            if code not in [c for c, _ in seen]:
-                seen.append((code, name.strip()))
-                found += 1
-            if len(seen) >= limit:
-                break
-        if found == 0:
-            break
-        page += 1
-    return seen[:limit]
-
-
-def search_stock(query: str) -> list[tuple[str, str]]:
-    """종목명으로 (코드, 이름) 후보 검색 (네이버 자동완성, 비공식)."""
-    url = f"https://ac.stock.naver.com/ac?q={requests.utils.quote(query)}&target=stock"
-    r = requests.get(url, headers=_UA, timeout=6)
-    r.raise_for_status()
-    data = r.json()
-    out: list[tuple[str, str]] = []
-    items = data.get("items") if isinstance(data, dict) else data
-    for it in items or []:
-        # 형식이 바뀔 수 있어 관용적으로 파싱: 6자리 코드와 이름 문자열을 찾는다
-        vals = []
-        stack = [it]
-        while stack:
-            v = stack.pop()
-            if isinstance(v, (list, tuple)):
-                stack.extend(v)
-            elif isinstance(v, dict):
-                stack.extend(v.values())
-            elif isinstance(v, str):
-                vals.append(v)
-        code = next((v for v in vals if re.fullmatch(r"\d{6}", v)), None)
-        name = next((v for v in vals if v and not re.fullmatch(r"[\d.]+", v) and v != code and len(v) <= 30), None)
-        if code and name:
-            out.append((code, name))
-    return out[:10]
-
-
 def top_volume_codes(limit: int = 30, market: str = "KOSPI") -> list[tuple[str, str]]:
     """네이버 거래량 상위 페이지에서 (코드, 종목명) 추출. market: KOSPI | KOSDAQ."""
     sosok = "0" if market.upper() == "KOSPI" else "1"

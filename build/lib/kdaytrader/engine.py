@@ -263,30 +263,6 @@ class TradingEngine:
             log.info("유니버스 추가: %s", ", ".join(f"{self.watchlist[c]}({c})" for c in added))
         return added
 
-    def remove_codes(self, codes: list[str]) -> tuple[list[str], list[str]]:
-        """관심종목에서 제거. 보유 중인 종목은 제거하지 않는다. (제거된 코드, 보유 중이라 건너뛴 코드) 반환."""
-        removed, kept = [], []
-        for code in codes:
-            if code not in self.watchlist:
-                continue
-            if self.broker.position(code) is not None:
-                kept.append(code)
-                continue
-            self.watchlist.pop(code, None)
-            self.store._builders.pop(code, None)
-            self.store.last_price.pop(code, None)
-            self.store.last_tick.pop(code, None)
-            self.trader.state.last_signal.pop(code, None)
-            self.trader.state.last_indicators.pop(code, None)
-            removed.append(code)
-        if removed:
-            try:
-                self.feed.unsubscribe(removed)
-            except Exception as e:
-                log.debug("구독 해제 실패: %s", e)
-            log.info("유니버스 제거: %s", ", ".join(removed))
-        return removed, kept
-
     def _maybe_refresh_universe(self, now: datetime) -> None:
         if self.universe_refresh_min <= 0 or self.feed.name == "sim":
             return

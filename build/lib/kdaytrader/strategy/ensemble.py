@@ -161,12 +161,12 @@ class EnsembleStrategy(Strategy):
         vr = r.vol_ratio if not np.isnan(r.vol_ratio) else 1.0
         # 시가 범위(ORB) 돌파
         if not np.isnan(r.or_high):
-            if r.close > r.or_high and (np.isnan(prev.or_high) or prev.close <= prev.or_high):
+            if r.close > r.or_high and prev.close <= prev.or_high:
                 s += 0.7 if vr >= 1.5 else 0.4
                 why.append("시가범위(ORB) 상향 돌파")
             elif r.close > r.or_high:
                 s += 0.2
-            if r.close < r.or_low and (np.isnan(prev.or_low) or prev.close >= prev.or_low):
+            if r.close < r.or_low and prev.close >= prev.or_low:
                 s -= 0.7 if vr >= 1.5 else 0.4
                 why.append("시가범위(ORB) 하향 이탈")
             elif r.close < r.or_low:

@@ -145,7 +145,3 @@ class CandleStore:
 
     def codes(self) -> list[str]:
         return list(self._builders.keys())
-
-    def has(self, code: str) -> bool:
-        """이미 추적 중인 종목인지 (빌더를 만들지 않음)."""
-        return code in self._builders

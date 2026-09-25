@@ -93,45 +93,27 @@ MACRO_KEYWORDS = [
 ]
 
 
-_ALL_TERMS = {**POSITIVE_TERMS, **NEGATIVE_TERMS}
-_TERMS_LONGEST_FIRST = sorted(_ALL_TERMS, key=len, reverse=True)
-
-
 def sentiment_score(text: str) -> float:
-    """헤드라인 감성 점수 -1 ~ +1 (사전 기반, 단순 부정어 처리).
-
-    긴 용어부터 매칭하고 매칭 구간을 지워, "환율 급등" 같은 복합 악재 안의 "급등" 이 호재로 다시 집계되지 않게 한다.
-    """
+    """헤드라인 감성 점수 -1 ~ +1 (사전 기반, 단순 부정어 처리)."""
     s = 0.0
     hits = 0
-    work = text
-    for term in _TERMS_LONGEST_FIRST:
-        idx = work.find(term)
-        if idx < 0:
-            continue
-        w = _ALL_TERMS[term]
-        end = idx + len(term)
-        neg = any(n in text[end : end + 6] for n in NEGATION)
-        s += -w * 0.5 if neg else w
-        hits += 1
-        work = work[:idx] + " " * len(term) + work[end:]
+    for term, w in POSITIVE_TERMS.items():
+        if term in text:
+            neg = any(n in text[text.find(term) + len(term) : text.find(term) + len(term) + 6] for n in NEGATION)
+            s += -w * 0.5 if neg else w
+            hits += 1
+    for term, w in NEGATIVE_TERMS.items():
+        if term in text:
+            neg = any(n in text[text.find(term) + len(term) : text.find(term) + len(term) + 6] for n in NEGATION)
+            s += -w * 0.5 if neg else w
+            hits += 1
     if hits == 0:
         return 0.0
     return max(-1.0, min(1.0, s / math.sqrt(hits)))
 
 
-_LATIN_KW = re.compile(r"^[A-Za-z]+$")
-
-
-def _kw_hit(k: str, text: str) -> bool:
-    """ASCII 약어(SM, KT, HBM ...)는 라틴 문자 경계로 매칭해 SMR/KTX/KT&G 같은 오탐을 막는다."""
-    if _LATIN_KW.fullmatch(k):
-        return re.search(r"(?<![A-Za-z])" + re.escape(k) + r"(?![A-Za-z&])", text) is not None
-    return k in text
-
-
 def detect_sectors(text: str) -> list[str]:
-    return [sec for sec, kws in SECTOR_KEYWORDS.items() if any(_kw_hit(k, text) for k in kws)]
+    return [sec for sec, kws in SECTOR_KEYWORDS.items() if any(k in text for k in kws)]
 
 
 def is_macro(text: str) -> bool:
@@ -219,7 +201,7 @@ class MarketContext:
         self.names = dict(names or {})
         self.events = list(events or [])
         self.news: deque[NewsItem] = deque(maxlen=500)
-        self._seen_titles: dict[str, None] = {}  # 삽입 순서 유지 → 오래된 제목부터 제거
+        self._seen_titles: set[str] = set()
         # 지수: 이름 → (ts, 값, 전일대비 %)
         self.index: dict[str, tuple[datetime, float, float]] = {}
         self._index_hist: dict[str, deque[tuple[datetime, float]]] = {}
@@ -247,10 +229,9 @@ class MarketContext:
         with self._lock:
             if key in self._seen_titles:
                 return None
-            self._seen_titles[key] = None
+            self._seen_titles.add(key)
             if len(self._seen_titles) > 5000:
-                for old in list(self._seen_titles)[:2500]:
-                    del self._seen_titles[old]
+                self._seen_titles = set(list(self._seen_titles)[-2500:])
             codes = [c for c, n in self.names.items() if n and n in title]
             item = NewsItem(ts, title, source, link, sentiment_score(title), detect_sectors(title), codes, is_macro(title))
             self.news.append(item)
@@ -337,18 +318,12 @@ class MarketContext:
                 continue
             if n.sentiment == 0.0:
                 continue
-            d = n.decayed(now, self.p.news_half_life_min)
-            if d == 0.0:  # 완전히 감쇠한 뉴스는 제외
-                continue
-            vals.append(d)
+            vals.append(n.decayed(now, self.p.news_half_life_min))
         if not vals:
             return 0.0, 0
         # 강한 뉴스가 희석되지 않도록 절대값 가중 평균
         weights = [abs(v) for v in vals]
-        total = sum(weights)
-        if total <= 0:
-            return 0.0, 0
-        return sum(v * w for v, w in zip(vals, weights)) / total, len(vals)
+        return sum(v * w for v, w in zip(vals, weights)) / sum(weights), len(vals)
 
     def assess(self, code: str, now: datetime) -> ContextAssessment:
         a = ContextAssessment()

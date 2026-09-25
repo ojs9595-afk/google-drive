@@ -192,21 +192,11 @@ class RuleSet:
     def __init__(self, triggers: list[Trigger] | None = None):
         self.triggers = list(triggers or [])
 
-    @staticmethod
-    def _set_position_metrics(trig: Trigger, metrics: dict[str, float]) -> None:
-        """Aggregate/Not 안에 중첩된 RiskTrigger 에도 포지션 지표를 전달한다."""
-        if isinstance(trig, RiskTrigger):
-            trig.position_metrics = metrics
-        elif isinstance(trig, AggregateTrigger):
-            for t in trig.triggers:
-                RuleSet._set_position_metrics(t, metrics)
-        elif isinstance(trig, NotTrigger):
-            RuleSet._set_position_metrics(trig.trigger, metrics)
-
     def evaluate(self, ind: pd.DataFrame, has_position: bool, now: datetime, position_metrics: dict[str, float] | None = None) -> RuleOutcome:
         out = RuleOutcome()
         for trig in self.triggers:
-            self._set_position_metrics(trig, position_metrics or {})
+            if isinstance(trig, RiskTrigger):
+                trig.position_metrics = position_metrics or {}
             info = trig.has_triggered(ind, has_position, now)
             if not info:
                 continue
@@ -218,9 +208,8 @@ class RuleSet:
                 elif act.type == ActionType.BLOCK_ENTRY and not has_position:
                     out.entry_block = out.entry_block or f"규칙 {label}"
                     out.notes.append(f"규칙 {label}: {info.reason} → 진입 차단")
-                elif act.type == ActionType.EXIT and has_position:  # scaling 은 SCORE 에만 영향
+                elif act.type == ActionType.EXIT and has_position and info.scaling <= 0:
                     out.exit_hint = out.exit_hint or f"규칙 {label}({info.reason})"
-                    out.notes.append(f"규칙 {label}: {info.reason} → 청산")
         out.bias = max(-40.0, min(40.0, out.bias))
         return out
 

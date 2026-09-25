@@ -14,37 +14,6 @@ def is_fund_like(name: str) -> bool:
     return bool(name) and bool(_ETF_RE.search(name))
 
 
-def top_codes(market: str = "KOSDAQ", n: int = 30, by: str = "volume", exclude: set[str] | None = None, kis_client=None) -> dict[str, str]:
-    """거래량(by=volume) 또는 시가총액(by=marketcap) 상위 n개 {코드: 이름}. ETF/ETN 은 제외. 시세 개별 조회 없이 빠르게."""
-    from .data.naver import top_marketcap_codes, top_volume_codes
-
-    exclude = exclude or set()
-    markets = ["KOSPI", "KOSDAQ"] if market.upper() in ("ALL", "전체", "") else [market.upper()]
-    out: dict[str, str] = {}
-    per = max(n, 10)
-    for m in markets:
-        try:
-            rows = top_marketcap_codes(per + 20, m) if by == "marketcap" else top_volume_codes(per + 20, m)
-        except Exception as e:
-            log.warning("%s %s 상위 조회 실패: %s", m, by, e)
-            if by == "volume" and kis_client is not None and m == "KOSPI":
-                try:
-                    rows = [(r["code"], r["name"]) for r in kis_client.volume_rank(per + 20)]
-                except Exception:
-                    rows = []
-            else:
-                rows = []
-        for code, name in rows:
-            if code in exclude or code in out or is_fund_like(name):
-                continue
-            out[code] = name
-            if len(out) >= n:
-                break
-        if len(out) >= n:
-            break
-    return out
-
-
 def screen(
     source: str = "naver",
     limit: int = 15,
