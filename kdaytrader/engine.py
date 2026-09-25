@@ -14,7 +14,7 @@ from .context import MarketContext
 from .dashboard import Dashboard
 from .data.base import DataFeed, Tick
 from .data.candles import CandleStore
-from .market import CLOSING_AUCTION_START, now_kst
+from .market import CLOSING_AUCTION_START, is_market_open, now_kst
 from .notifier import Notifier
 from .risk import RiskManager
 from .strategy.base import Strategy
@@ -83,6 +83,8 @@ class TradingEngine:
         self.screener_cfg = screener_cfg or {}
         self._last_universe_refresh: datetime | None = None
         self._universe_thread = None
+        self._last_snapshot: dict | None = None
+        self._offhours_logged = False
         self.web = None
         if web_host:
             from .webui import WebServer
@@ -112,6 +114,17 @@ class TradingEngine:
 
     # ----- 스냅샷 (웹 대시보드) -----
     def snapshot(self) -> dict:
+        """HTTP 스레드에서 호출됨. 루프가 상태를 바꾸는 순간과 겹치면 직전 스냅샷을 돌려준다."""
+        try:
+            snap = self._snapshot()
+            self._last_snapshot = snap
+            return snap
+        except RuntimeError:  # dict/deque changed size during iteration
+            if self._last_snapshot is not None:
+                return self._last_snapshot
+            raise
+
+    def _snapshot(self) -> dict:
         t = self.trader
         b = self.broker
         prices = self.store.last_price
@@ -293,10 +306,21 @@ class TradingEngine:
         self._current_day = day
         if tick.change_pct:
             self.context.update_stock_change(tick.code, tick.change_pct)
+        # 정규장 밖의 실시간 시세는 표시용으로만 (가짜 캔들 방지)
+        if self.feed.name != "sim" and not is_market_open(tick.ts):
+            self.store.last_price[tick.code] = tick.price
+            self.store.last_tick[tick.code] = tick
+            if not self._offhours_logged:
+                self._offhours_logged = True
+                log.info("정규장(09:00~15:30) 밖입니다. 시세는 표시만 하고 캔들/시그널은 생성하지 않습니다.")
+            self.dashboard.status = "장 마감 (시세 표시만)"
+            return
+        if self.feed.name != "sim" and self.dashboard.status.startswith("장 마감"):
+            self.dashboard.status = "실시간 수신 중"
         closed = self.store.add_tick(tick)
         if closed is not None:
             if hasattr(self.feed, "index_tick"):
-                it = self.feed.index_tick(tick.ts)
+                it = self.feed.index_tick(closed.ts)  # 방금 닫힌 봉의 지수값 (미래 참조 방지)
                 if it:
                     self.context.update_index("KOSPI", it[0], it[1], tick.ts)
             self.equity_history.append((tick.ts.strftime("%H:%M"), self.broker.equity(self.store.last_price)))
@@ -334,6 +358,27 @@ class TradingEngine:
             self._trades_written = len(trades)
         except Exception as e:  # pragma: no cover
             log.debug("거래 CSV 기록 실패: %s", e)
+
+    def run_on_loop(self, fn, timeout: float = 5.0):
+        """다른 스레드에서 매매 상태를 바꾸는 호출을 이벤트 루프 스레드로 넘긴다 (경쟁 방지)."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return fn()
+        import concurrent.futures
+
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _call():
+            try:
+                fut.set_result(fn())
+            except BaseException as e:  # noqa: BLE001
+                fut.set_exception(e)
+
+        loop.call_soon_threadsafe(_call)
+        try:
+            return fut.result(timeout)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError("엔진이 응답하지 않습니다. 잠시 후 다시 시도하세요.")
 
     def request_stop(self) -> None:
         """다른 스레드에서 호출 가능. 피드를 멈추고 이벤트 루프의 피드 태스크를 취소한다."""
@@ -395,19 +440,20 @@ class TradingEngine:
             self.last_error = f"피드 오류: {e}"
             log.exception("피드 태스크 오류")
         finally:
-            self._flush_trades()
-            self.feed.stop()
-            for c in self.collectors:
-                if hasattr(c, "stop"):
-                    c.stop()
-            for t in tasks[1:]:
-                t.cancel()
-            if self._live is not None:
-                self._live.update(self.dashboard.render())
-                self._live.stop()
+            for step in (
+                self._flush_trades,
+                self.feed.stop,
+                lambda: [c.stop() for c in self.collectors if hasattr(c, "stop")],
+                lambda: [t.cancel() for t in tasks[1:]],
+                lambda: self._live.update(self.dashboard.render()) if self._live is not None else None,
+                lambda: self._live.stop() if self._live is not None else None,
+                lambda: self.web.stop() if self.web is not None else None,
+            ):
+                try:
+                    step()
+                except Exception as e:  # pragma: no cover
+                    log.debug("종료 단계 오류: %s", e)
             self.dashboard.status = "종료"
-            if self.web is not None:
-                self.web.stop()
             self._loop = None
             self._feed_task = None
 

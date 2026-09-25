@@ -34,12 +34,12 @@ def google_news_rss(query: str) -> str:
     return f"https://news.google.com/rss/search?q={quote(query)}+when:1d&hl=ko&gl=KR&ceid=KR:ko"
 
 
-def parse_rss(text: str, source: str) -> list[tuple[datetime, str, str]]:
-    """(ts, title, link) 리스트."""
+def parse_rss(text: str | bytes, source: str) -> list[tuple[datetime, str, str]]:
+    """(ts, title, link) 리스트. bytes 를 주면 XML 선언의 인코딩을 따른다."""
     out = []
     try:
         root = ET.fromstring(text)
-    except ET.ParseError:
+    except (ET.ParseError, ValueError):
         return out
     for item in root.iter("item"):
         title = (item.findtext("title") or "").strip()
@@ -78,28 +78,38 @@ class NewsCollector:
         self.last_error: str = ""
         self.fetch_count = 0
 
-    def fetch_once(self) -> int:
-        added = 0
+    def fetch_items(self) -> list[tuple[datetime, str, str, str]]:
+        """네트워크만 수행 (스레드 안전). (ts, title, source, link) 목록."""
+        items = []
         for source, url in self.rss:
             try:
                 r = self.session.get(url, timeout=8)
                 r.raise_for_status()
+                for ts, title, link in parse_rss(r.content, source):
+                    items.append((ts, title, source, link))
             except Exception as e:  # pragma: no cover - network
                 self.last_error = f"{source}: {e}"
                 log.debug("RSS 실패 %s: %s", source, e)
-                continue
-            for ts, title, link in parse_rss(r.text, source):
-                if self.ctx.add_news(ts, title, source, link) is not None:
-                    added += 1
         self.fetch_count += 1
+        return items
+
+    def apply(self, items) -> int:
+        added = 0
+        for ts, title, source, link in items:
+            if self.ctx.add_news(ts, title, source, link) is not None:
+                added += 1
         return added
+
+    def fetch_once(self) -> int:
+        return self.apply(self.fetch_items())
 
     async def run(self) -> None:
         self._running = True
         loop = asyncio.get_running_loop()
         while self._running:
             try:
-                n = await loop.run_in_executor(None, self.fetch_once)
+                items = await loop.run_in_executor(None, self.fetch_items)
+                n = self.apply(items)  # 컨텍스트 변경은 이벤트 루프 스레드에서
                 if n:
                     log.info("뉴스 %d건 수집", n)
             except Exception as e:  # pragma: no cover
@@ -152,8 +162,8 @@ class IndexCollector:
             return None
         return float(d.get("bstp_nmix_prpr", 0)), float(d.get("bstp_nmix_prdy_ctrt", 0))
 
-    def fetch_once(self) -> int:
-        n = 0
+    def fetch_items(self) -> list[tuple[str, float, float]]:
+        out = []
         for name in ("KOSPI", "KOSDAQ"):
             res = None
             for fn in (self._naver, self._kis):
@@ -164,16 +174,24 @@ class IndexCollector:
                 except Exception as e:  # pragma: no cover - network
                     self.last_error = f"{name}: {e}"
             if res:
-                self.ctx.update_index(name, res[0], res[1])
-                n += 1
-        return n
+                out.append((name, res[0], res[1]))
+        return out
+
+    def apply(self, items) -> int:
+        for name, val, chg in items:
+            self.ctx.update_index(name, val, chg)
+        return len(items)
+
+    def fetch_once(self) -> int:
+        return self.apply(self.fetch_items())
 
     async def run(self) -> None:
         self._running = True
         loop = asyncio.get_running_loop()
         while self._running:
             try:
-                await loop.run_in_executor(None, self.fetch_once)
+                items = await loop.run_in_executor(None, self.fetch_items)
+                self.apply(items)
             except Exception as e:  # pragma: no cover
                 log.warning("지수 수집 오류: %s", e)
             await asyncio.sleep(self.poll_sec)

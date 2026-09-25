@@ -124,7 +124,12 @@ class SimFeed(DataFeed):
 
     def minute_candles(self, code: str, count: int = 400, interval: int = 1) -> list[Candle]:
         self._ensure(code)
-        return self._history[code][-count:]
+        hist = self._history[code]
+        if interval > 1:
+            from .naver import resample
+
+            hist = resample(hist, interval)
+        return hist[-count:]
 
     def _index_path(self, name: str, which: str) -> list[Candle]:
         """관심종목 평균 로그수익률 × 0.7 + 노이즈로 지수 경로를 합성 (베타 ≈ 0.7~1.4 로 현실적)."""
@@ -224,4 +229,6 @@ class SimFeed(DataFeed):
                     )
                 if self.speed > 0:
                     await asyncio.sleep(60.0 / self.ticks_per_minute / self.speed)
+                else:
+                    await asyncio.sleep(0)  # 최대 속도에서도 루프에 제어권을 양보 (웹 요청/정지 처리)
         self._running = False

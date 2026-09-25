@@ -158,15 +158,20 @@ class NaverFeed(DataFeed):
             for tick in ticks:
                 if tick is None or not self._running:
                     continue
-                key = (tick.price, tick.acc_volume)
-                # 변화가 없어도 30초마다 한 번은 흘려보내 캔들이 닫히도록 한다
-                if last_key.get(tick.code) == key and now - last_emit.get(tick.code, now - timedelta(days=1)) < timedelta(seconds=30):
-                    continue
-                last_key[tick.code] = key
-                last_emit[tick.code] = now
-                # 폴링 시각이 체결 시각보다 뒤이므로 캔들 집계는 현재 시각 기준으로 한다
-                tick.ts = now
-                await self._emit(tick)
+                try:
+                    key = (tick.price, tick.acc_volume)
+                    # 변화가 없어도 30초마다 한 번은 흘려보내 캔들이 닫히도록 한다
+                    if last_key.get(tick.code) == key and now - last_emit.get(tick.code, now - timedelta(days=1)) < timedelta(seconds=30):
+                        continue
+                    last_key[tick.code] = key
+                    last_emit[tick.code] = now
+                    # 폴링 시각이 체결 시각보다 뒤이므로 캔들 집계는 현재 시각 기준으로 한다
+                    tick.ts = now
+                    await self._emit(tick)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # pragma: no cover
+                    log.warning("틱 처리 오류 %s: %s", tick.code, e)
             elapsed = loop.time() - started
             await asyncio.sleep(max(0.2, self.poll_interval - elapsed))
 

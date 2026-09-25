@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,7 @@ class KISClient:
         self.token_cache = Path(token_cache) if token_cache else None
         self._last_call = 0.0
         self.min_interval = 0.06 if not paper else 0.5  # 초당 호출 제한(실전 20회/모의 2회)
+        self._lock = threading.Lock()  # 여러 스레드(수집기/엔진/앱)가 공유
 
     # ----- 인증 -----
     def _load_cached_token(self) -> None:
@@ -65,6 +67,12 @@ class KISClient:
             self._load_cached_token()
         if self._token and _time.time() < self._token_expiry - 300:
             return self._token
+        with self._lock:
+            if self._token and _time.time() < self._token_expiry - 300:
+                return self._token
+            return self._issue_token()
+
+    def _issue_token(self) -> str:
         r = self.session.post(
             f"{self.base}/oauth2/tokenP",
             json={"grant_type": "client_credentials", "appkey": self.app_key, "appsecret": self.app_secret},
@@ -107,10 +115,11 @@ class KISClient:
         return h
 
     def _throttle(self) -> None:
-        wait = self.min_interval - (_time.time() - self._last_call)
-        if wait > 0:
-            _time.sleep(wait)
-        self._last_call = _time.time()
+        with self._lock:
+            wait = self.min_interval - (_time.time() - self._last_call)
+            if wait > 0:
+                _time.sleep(wait)
+            self._last_call = _time.time()
 
     def get(self, path: str, tr_id: str, params: dict) -> dict:
         self._throttle()
@@ -377,12 +386,15 @@ class KISFeed(DataFeed):
                     self._ws, self._loop = ws, asyncio.get_running_loop()
                     for code in list(self._codes):
                         await ws.send(self._sub_msg(code, key))
-                    backoff = 1
                     while self._running:
-                        msg = await ws.recv()
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=90)
+                        except asyncio.TimeoutError:
+                            raise ConnectionError("KIS 웹소켓 90초 무응답 (재접속)")
                         if not isinstance(msg, str):
                             continue
                         if msg.startswith("0|") or msg.startswith("1|"):
+                            backoff = 1  # 실제 데이터 수신 후에만 백오프 초기화
                             for tick in parse_realtime(msg):
                                 await self._emit(tick)
                             continue
@@ -394,7 +406,8 @@ class KISFeed(DataFeed):
                         if tr == "PINGPONG":
                             await ws.send(msg)
                         elif d.get("body", {}).get("rt_cd") not in (None, "0"):
-                            log.warning("KIS WS 응답: %s", d.get("body", {}).get("msg1"))
+                            self.client._approval_key = None  # 승인키 재발급 후 재접속
+                            raise RuntimeError(f"KIS 구독 거부: {d.get('body', {}).get('msg1')}")
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # pragma: no cover - network

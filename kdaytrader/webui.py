@@ -54,12 +54,15 @@ class WebServer:
 
             def do_POST(self):
                 if self.path == "/api/toggle_auto":
-                    engine.trader.auto_trade = not engine.trader.auto_trade
-                    self._send(200, json.dumps({"auto_trade": engine.trader.auto_trade}).encode(), "application/json")
+                    def _toggle():
+                        engine.trader.auto_trade = not engine.trader.auto_trade
+                        return engine.trader.auto_trade
+
+                    val = engine.run_on_loop(_toggle)
+                    self._send(200, json.dumps({"auto_trade": val}).encode(), "application/json")
                 elif self.path == "/api/close_all":
-                    ts = engine.last_ts()
-                    engine.trader.force_close_all(ts, "수동 전량 청산")
-                    self._send(200, b'{"ok":true}', "application/json")
+                    n = engine.run_on_loop(lambda: engine.trader.force_close_all(engine.last_ts(), "수동 전량 청산", manual=True))
+                    self._send(200, json.dumps({"ok": True, "closed": n}).encode(), "application/json")
                 else:
                     self._send(404, b"not found", "text/plain")
 

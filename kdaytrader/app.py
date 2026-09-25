@@ -190,15 +190,20 @@ class AppController:
     def toggle_auto(self) -> bool:
         if self.engine is None:
             raise RuntimeError("엔진이 실행 중이 아닙니다.")
-        self.engine.trader.auto_trade = not self.engine.trader.auto_trade
-        return self.engine.trader.auto_trade
+        eng = self.engine
+
+        def _do():
+            eng.trader.auto_trade = not eng.trader.auto_trade
+            return eng.trader.auto_trade
+
+        return eng.run_on_loop(_do)
 
     def close_all(self) -> int:
         if self.engine is None:
             raise RuntimeError("엔진이 실행 중이 아닙니다.")
-        n = len(self.engine.broker.positions())
-        self.engine.trader.force_close_all(self.engine.last_ts(), "수동 전량 청산")
-        return n
+        eng = self.engine
+        # 매매 상태 변경은 반드시 엔진 루프 스레드에서 (손절 처리와의 중복 주문 방지)
+        return eng.run_on_loop(lambda: eng.trader.force_close_all(eng.last_ts(), "수동 전량 청산", manual=True))
 
     # ----- 차트 -----
     def chart(self, code: str, n: int = 240) -> dict:

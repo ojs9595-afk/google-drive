@@ -19,6 +19,7 @@ from .strategy.base import Action, Signal, Strategy
 from .strategy.quant import QuantSignals
 from .strategy.rules import RuleSet
 from .context import MarketContext
+from .market import to_kst
 from . import analytics
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,8 @@ class Trader:
         self.quant = quant
         self.rules = rules
         self.beta: dict[str, float] = {}  # 코스피 대비 롤링 베타 (gs-quant econometrics.beta)
+        self._alerted: dict[str, str] = {}  # 시그널 전용 모드 청산 알림 중복 방지 (code -> reason)
+        self._force_close_alerted: object = None
         self.window = max(window, strategy.min_bars + 5)
         self.context = context or MarketContext()
         self.risk = risk
@@ -114,6 +117,10 @@ class Trader:
         scale = self.risk.kelly_scale()
         if self.quant is not None and sig.code in self.quant.last:
             scale *= self.quant.last[sig.code].vol_scale
+        # 체결 기준가는 캔들 종가가 아니라 마지막 틱 가격 (실시간에서는 캔들 마감 직후 가격이 이미 움직였을 수 있음)
+        live = self.store.last_price.get(sig.code)
+        if live and live > 0:
+            sig.price = float(live)
         qty = self.risk.position_size(equity, self.broker.cash(), sig.price, sig.atr, scale)
         if qty <= 0:
             sig.reasons.append("진입 보류: 수량 0 (자금/손절폭)")
@@ -121,6 +128,7 @@ class Trader:
         fill = self.broker.buy(sig.code, qty, sig.price, now, reason="; ".join(sig.reasons[:3]), name=self.name(sig.code))
         if fill is None:
             return
+        self._alerted.pop(sig.code, None)
         pos = self.broker.position(sig.code)
         if pos is not None:
             self.risk.attach(pos, sig.atr)
@@ -136,6 +144,7 @@ class Trader:
             return
         trade = self.broker.trades()[-1]
         self.risk.record_trade(code, trade.pnl, now)
+        self._alerted.pop(code, None)
         self._event(now, code, "SELL", fill, reason, trade.pnl)
 
     # ----- 이벤트 처리 -----
@@ -145,12 +154,12 @@ class Trader:
             self.quant.on_tick(tick)
         self.on_price(tick.code, tick.price, tick.ts)
 
-    def on_price(self, code: str, price: float, now: datetime, low: float | None = None, high: float | None = None) -> None:
+    def on_price(self, code: str, price: float, now: datetime, low: float | None = None, high: float | None = None, open_: float | None = None) -> None:
         """틱(또는 캔들 고저)마다 보유 포지션의 손절/익절/트레일링을 점검."""
         pos = self.broker.position(code)
         if pos is None:
             return
-        reason, exit_price = self.risk.check_exit(pos, price, now, low, high)
+        reason, exit_price = self.risk.check_exit(pos, price, now, low, high, open_)
         if reason is None:
             urgent = self.context.urgent_exit(code, now)
             if urgent:
@@ -158,7 +167,8 @@ class Trader:
         if reason:
             if self.auto_trade:
                 self._exit(code, exit_price, now, reason)
-            else:
+            elif self._alerted.get(code) != reason:
+                self._alerted[code] = reason
                 self.notifier.send(f"[청산 신호] {self.name(code)} {reason} @{exit_price:,.0f}")
             return
         pq = self.risk.partial_take_qty(pos, price)
@@ -204,7 +214,7 @@ class Trader:
             price = float(ind["close"].iloc[-1])
             metrics = {}
             if pos is not None:
-                metrics = {"r_multiple": pos.r_multiple(price), "unrealized_pct": pos.unrealized_pct(price), "holding_min": (now - pos.entry_ts).total_seconds() / 60.0}
+                metrics = {"r_multiple": pos.r_multiple(price), "unrealized_pct": pos.unrealized_pct(price), "holding_min": (now - to_kst(pos.entry_ts)).total_seconds() / 60.0}
             ro = self.rules.evaluate(ind, has_pos, now, metrics)
             bias += ro.bias
             entry_block = entry_block or ro.entry_block
@@ -228,10 +238,13 @@ class Trader:
         elif sig.action == Action.SELL and has_pos:
             exit_reasons = [r for r in sig.reasons if r.startswith("청산")]
             reason = "전략 청산: " + (", ".join(exit_reasons) if exit_reasons else f"점수 {sig.score:+.0f}")
+            live = self.store.last_price.get(code)
+            exit_price = float(live) if live and live > 0 else sig.price
             if self.auto_trade:
-                self._exit(code, sig.price, now, reason)
-            else:
-                self.notifier.send(f"[매도 신호] {self.name(code)} {reason} @{sig.price:,.0f}")
+                self._exit(code, exit_price, now, reason)
+            elif self._alerted.get(code) != reason:
+                self._alerted[code] = reason
+                self.notifier.send(f"[매도 신호] {self.name(code)} {reason} @{exit_price:,.0f}")
         return sig
 
     def _log_signal(self, sig: Signal, prev: Signal | None, has_pos: bool, now: datetime) -> None:
@@ -275,7 +288,23 @@ class Trader:
         weight = self.context.p.market_trend_weight
         return market_bias * weight * (beta_v - 1.0)
 
-    def force_close_all(self, now: datetime, reason: str = "장 마감 강제 청산") -> None:
-        for code in list(self.broker.positions().keys()):
-            price = self.store.last_price.get(code, self.broker.position(code).avg_price)
+    def force_close_all(self, now: datetime, reason: str = "장 마감 강제 청산", manual: bool = False) -> int:
+        """관리 포지션 전량 청산. 자동매매가 꺼져 있으면(시그널 전용) 사용자가 직접 요청(manual)한 경우에만 주문한다."""
+        codes = list(self.broker.positions().keys())
+        if not codes:
+            return 0
+        if not self.auto_trade and not manual:
+            key = (now.date(), reason)
+            if self._force_close_alerted != key:
+                self._force_close_alerted = key
+                self.notifier.send(f"[강제청산 신호] {reason}: " + ", ".join(self.name(c) for c in codes) + " (자동매매 OFF — 주문 미전송)")
+            return 0
+        n = 0
+        for code in codes:
+            pos = self.broker.position(code)
+            if pos is None:
+                continue
+            price = self.store.last_price.get(code, pos.avg_price)
             self._exit(code, price, now, reason)
+            n += 1
+        return n

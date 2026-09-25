@@ -82,8 +82,8 @@ class Dashboard:
             regime = {"trend": "추세", "range": "횡보"}.get(sig.regime if sig else "", "-")
             reasons = ", ".join(sig.reasons[:2]) if sig else ""
             table.add_row(
-                t.name(code), code, f"{price:,.0f}", _pct_text(chg), vwap, rsi, adx, vr, regime,
-                Text(f"{score:+.0f}", style=score_style), Text(action, style=act_style), reasons,
+                Text(t.name(code)), code, f"{price:,.0f}", _pct_text(chg), vwap, rsi, adx, vr, regime,
+                Text(f"{score:+.0f}", style=score_style), Text(action, style=act_style), Text(reasons),
             )
         return Panel(table, title="관심종목 / 시그널", border_style="cyan")
 
@@ -95,7 +95,7 @@ class Dashboard:
         for code, p in t.broker.positions().items():
             price = t.store.last_price.get(code, p.avg_price)
             table.add_row(
-                t.name(code), f"{p.qty:,}", f"{p.avg_price:,.0f}", f"{price:,.0f}", _won(p.unrealized(price)),
+                Text(t.name(code)), f"{p.qty:,}", f"{p.avg_price:,.0f}", f"{price:,.0f}", _won(p.unrealized(price)),
                 _pct_text(p.unrealized_pct(price)), f"{p.r_multiple(price):+.1f}", f"{p.stop_price:,.0f}", f"{p.take_profit:,.0f}",
                 p.entry_ts.strftime("%H:%M"),
             )
@@ -110,7 +110,7 @@ class Dashboard:
             table.add_column(col, justify="right" if col in ("수량", "가격", "손익") else "left", no_wrap=col != "사유")
         for ev in t.state.events[-12:][::-1]:
             side = Text(ev.side, style="bold red" if ev.side == "BUY" else "bold blue")
-            table.add_row(ev.ts.strftime("%H:%M:%S"), ev.name, side, f"{ev.qty:,}", f"{ev.price:,.0f}", _won(ev.pnl) if ev.pnl is not None else Text("-"), ev.reason)
+            table.add_row(ev.ts.strftime("%H:%M:%S"), Text(ev.name), side, f"{ev.qty:,}", f"{ev.price:,.0f}", _won(ev.pnl) if ev.pnl is not None else Text("-"), Text(ev.reason))
         return Panel(table, title="체결 / 시그널 로그", border_style="magenta")
 
     def market(self) -> Panel:
@@ -129,7 +129,7 @@ class Dashboard:
             for col in ["섹터", "RS", "뉴스감성", "건수"]:
                 tbl.add_column(col, justify="right" if col != "섹터" else "left")
             for s, rs, sent, cnt in board:
-                tbl.add_row(s, _pct_text(rs), Text(f"{sent:+.2f}", style="red" if sent > 0.2 else ("blue" if sent < -0.2 else "white")), str(cnt))
+                tbl.add_row(Text(s), _pct_text(rs), Text(f"{sent:+.2f}", style="red" if sent > 0.2 else ("blue" if sent < -0.2 else "white")), str(cnt))
             lines.append(tbl)
         return Panel(Group(*lines) if lines else Text("지수 데이터 대기 중"), title="거시 / 섹터", border_style="white")
 
@@ -145,7 +145,7 @@ class Dashboard:
         for n in ctx.recent_news(10):
             style = "red" if n.sentiment > 0.2 else ("blue" if n.sentiment < -0.2 else "white")
             tags = ",".join(n.sectors[:2]) + ("|거시" if n.macro else "")
-            table.add_row(n.ts.strftime("%H:%M"), Text(f"{n.sentiment:+.1f}", style=style), tags, n.title[:70])
+            table.add_row(n.ts.strftime("%H:%M"), Text(f"{n.sentiment:+.1f}", style=style), Text(tags), Text(n.title[:70]))
         if not ctx.news:
             table.add_row("", "", "", "뉴스 수집 대기 중 (네트워크/RSS 설정 확인)")
         return Panel(table, title="실시간 뉴스 (거시·산업·종목)", border_style="white")

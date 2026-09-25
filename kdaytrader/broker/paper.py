@@ -47,7 +47,7 @@ class PaperBroker(Broker):
         cost = fill_price * qty
         fee = self.fee.buy_cost(fill_price, qty)
         if cost + fee > self._cash:
-            qty = int((self._cash - fee) // fill_price)
+            qty = int(self._cash // (fill_price * (1.0 + self.fee.commission_rate)))
             if qty <= 0:
                 return None
             cost = fill_price * qty

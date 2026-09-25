@@ -48,6 +48,19 @@ class CandleBuilder:
 
         closed: Candle | None = None
         if self.current is None:
+            if self.candles:
+                last = self.candles[-1]
+                if bucket < last.ts:
+                    return None  # 이미 시드된 과거 구간의 늦은 틱
+                if bucket == last.ts:
+                    # 과거 캔들 제공자가 진행 중인 봉을 포함해 준 경우: 그 봉을 이어서 갱신
+                    self.candles.pop()
+                    self._df_cache = None
+                    self.current = last
+                    last.high = max(last.high, tick.price)
+                    last.low = min(last.low, tick.price)
+                    last.close = tick.price
+                    return None
             self.current = Candle(bucket, tick.price, tick.price, tick.price, tick.price, vol)
             return None
         if bucket > self.current.ts:

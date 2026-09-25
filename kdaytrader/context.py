@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
@@ -208,55 +209,64 @@ class MarketContext:
         self.stock_change: dict[str, float] = {}
         self.updated_at: datetime | None = None
         self.enabled = True
+        # 수집기(스레드)와 엔진 루프가 동시에 접근하므로 재진입 락으로 보호
+        self._lock = threading.RLock()
 
     # ----- 입력 -----
     def update_index(self, name: str, value: float, change_pct: float, ts: datetime | None = None) -> None:
         ts = ts or datetime.now(tz=KST)
-        self.index[name] = (ts, value, change_pct)
-        h = self._index_hist.setdefault(name, deque(maxlen=5000))
-        h.append((ts, value))
-        self.updated_at = ts
+        with self._lock:
+            self.index[name] = (ts, value, change_pct)
+            h = self._index_hist.setdefault(name, deque(maxlen=5000))
+            h.append((ts, value))
+            self.updated_at = ts
 
     def update_stock_change(self, code: str, change_pct: float) -> None:
         self.stock_change[code] = change_pct
 
     def add_news(self, ts: datetime, title: str, source: str = "", link: str = "") -> NewsItem | None:
         key = re.sub(r"\s+", " ", title.strip())[:80]
-        if key in self._seen_titles:
-            return None
-        self._seen_titles.add(key)
-        if len(self._seen_titles) > 5000:
-            self._seen_titles = set(list(self._seen_titles)[-2500:])
-        codes = [c for c, n in self.names.items() if n and n in title]
-        item = NewsItem(ts, title, source, link, sentiment_score(title), detect_sectors(title), codes, is_macro(title))
-        self.news.append(item)
-        self.updated_at = datetime.now(tz=KST)
-        return item
+        with self._lock:
+            if key in self._seen_titles:
+                return None
+            self._seen_titles.add(key)
+            if len(self._seen_titles) > 5000:
+                self._seen_titles = set(list(self._seen_titles)[-2500:])
+            codes = [c for c, n in self.names.items() if n and n in title]
+            item = NewsItem(ts, title, source, link, sentiment_score(title), detect_sectors(title), codes, is_macro(title))
+            self.news.append(item)
+            self.updated_at = datetime.now(tz=KST)
+            return item
 
     def index_series(self, name: str = "KOSPI"):
         """지수 이력을 1분 종가 시계열(pd.Series)로 반환. 없으면 None."""
-        h = self._index_hist.get(name)
-        if not h or len(h) < 2:
-            return None
+        with self._lock:
+            h = self._index_hist.get(name)
+            if not h or len(h) < 2:
+                return None
+            snap = list(h)
         import pandas as pd
 
-        s = pd.Series([v for _, v in h], index=pd.DatetimeIndex([t for t, _ in h]))
+        s = pd.Series([v for _, v in snap], index=pd.DatetimeIndex([t for t, _ in snap]))
         return s.resample("1min").last().dropna()
 
     def seed_index_history(self, name: str, candles) -> None:
         """과거 지수 분봉으로 이력을 채운다 (베타/이벤트 스터디용)."""
-        h = self._index_hist.setdefault(name, deque(maxlen=5000))
-        for c in candles:
-            h.append((c.ts, c.close))
-        if candles:
-            last = candles[-1]
-            self.index.setdefault(name, (last.ts, last.close, 0.0))
+        with self._lock:
+            h = self._index_hist.setdefault(name, deque(maxlen=5000))
+            for c in candles:
+                h.append((c.ts, c.close))
+            if candles:
+                last = candles[-1]
+                self.index.setdefault(name, (last.ts, last.close, 0.0))
 
     # ----- 계산 -----
     def index_momentum(self, name: str, minutes: int = 10) -> float:
-        h = self._index_hist.get(name)
-        if not h or len(h) < 2:
-            return 0.0
+        with self._lock:
+            h = self._index_hist.get(name)
+            if not h or len(h) < 2:
+                return 0.0
+            h = tuple(h)
         now_ts, now_v = h[-1]
         past_v = None
         for ts, v in reversed(h):
@@ -295,7 +305,9 @@ class MarketContext:
     def news_sentiment(self, now: datetime, code: str = "", sector: str = "", macro_only: bool = False, max_age_min: float | None = None) -> tuple[float, int]:
         """조건에 맞는 뉴스의 시간 감쇠 가중 평균 감성과 건수."""
         vals = []
-        for n in self.news:
+        with self._lock:
+            items = tuple(self.news)
+        for n in items:
             if max_age_min is not None and (now - n.ts).total_seconds() / 60.0 > max_age_min:
                 continue
             if code and code not in n.codes:
@@ -374,15 +386,19 @@ class MarketContext:
         return None
 
     def recent_news(self, n: int = 10) -> list[NewsItem]:
-        return list(self.news)[-n:][::-1]
+        with self._lock:
+            return list(self.news)[-n:][::-1]
 
     def sector_board(self) -> list[tuple[str, float, float, int]]:
         """(섹터, 상대강도, 뉴스감성, 뉴스건수) 목록."""
         now = datetime.now(tz=KST)
         secs = sorted({s for s in self.stock_sectors.values()})
         out = []
+        with self._lock:
+            news_snapshot = tuple(self.news)
+            changes = dict(self.stock_change)
         for s in secs:
-            if not any(self.stock_sectors.get(c) == s for c in self.stock_change) and not any(s in n.sectors for n in self.news):
+            if not any(self.stock_sectors.get(c) == s for c in changes) and not any(s in n.sectors for n in news_snapshot):
                 continue
             sent, cnt = self.news_sentiment(now, sector=s)
             out.append((s, self.sector_relative_strength(s), sent, cnt))

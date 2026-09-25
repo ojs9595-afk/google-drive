@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
 from .broker.base import Position
-from .market import round_to_tick
+from .market import round_to_tick, to_kst
 
 
 @dataclass
@@ -124,13 +124,16 @@ class RiskManager:
         if len(hist) < 10:
             return 1.0
         wins = [x for x in hist if x > 0]
-        losses = [-x for x in hist if x <= 0]
+        losses = [-x for x in hist if x < 0]
         if not wins:
             return p.kelly_min_scale
-        if not losses:
+        if not losses or p.risk_per_trade <= 0:
+            return p.kelly_max_scale
+        avg_loss = sum(losses) / len(losses)
+        if avg_loss <= 0:
             return p.kelly_max_scale
         w = len(wins) / len(hist)
-        r = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
+        r = (sum(wins) / len(wins)) / avg_loss
         f = w - (1 - w) / r
         if f <= 0:
             return p.kelly_min_scale
@@ -183,17 +186,28 @@ class RiskManager:
                 note = f"트레일링 스탑 {trail:,}"
         return note
 
-    def check_exit(self, pos: Position, price: float, now: datetime, low: float | None = None, high: float | None = None) -> tuple[str | None, float]:
-        """청산 사유와 청산 가격. low/high 가 주어지면(캔들) 봉 내 도달 여부로 판단."""
+    def check_exit(self, pos: Position, price: float, now: datetime, low: float | None = None, high: float | None = None, open_: float | None = None) -> tuple[str | None, float]:
+        """청산 사유와 청산 가격. low/high 가 주어지면(캔들) 봉 내 도달 여부로 판단.
+
+        open_ 이 주어지면 갭으로 손절선을 뛰어넘어 시작한 봉은 시가에 체결된 것으로 본다 (보수적).
+        """
         lo = low if low is not None else price
         hi = high if high is not None else price
         if now.time() >= self.p.force_close:
             return "장 마감 강제 청산", price
         if pos.stop_price > 0 and lo <= pos.stop_price:
-            return "손절" if not pos.breakeven_moved else "본전/트레일링 스탑", min(pos.stop_price, price) if low is None else pos.stop_price
+            if low is None:
+                fill = min(pos.stop_price, price)
+            else:
+                fill = min(pos.stop_price, open_) if open_ is not None and open_ < pos.stop_price else pos.stop_price
+            return "손절" if not pos.breakeven_moved else "본전/트레일링 스탑", fill
         if pos.take_profit > 0 and hi >= pos.take_profit:
-            return "익절", max(pos.take_profit, price) if high is None else pos.take_profit
-        if self.p.max_holding_min > 0 and now - pos.entry_ts >= timedelta(minutes=self.p.max_holding_min):
+            if high is None:
+                fill = max(pos.take_profit, price)
+            else:
+                fill = max(pos.take_profit, open_) if open_ is not None and open_ > pos.take_profit else pos.take_profit
+            return "익절", fill
+        if self.p.max_holding_min > 0 and now - to_kst(pos.entry_ts) >= timedelta(minutes=self.p.max_holding_min):
             return "최대 보유시간 초과", price
         return None, price
 

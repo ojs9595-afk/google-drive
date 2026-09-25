@@ -198,7 +198,7 @@ class Backtester:
             risk.ensure_day(ts, broker.equity(store.last_price))
             # 1) 캔들 내 고저로 손절/익절 체크 (보유 중일 때)
             if broker.position(code) is not None:
-                trader.on_price(code, c.close, ts, low=c.low, high=c.high)
+                trader.on_price(code, c.close, ts, low=c.low, high=c.high, open_=c.open)
             # 2) 캔들 반영 후 전략 평가
             store.add_candle(code, c)
             ind = None
