@@ -13,6 +13,7 @@ import yaml
 from .risk import RiskParams
 from .strategy.ensemble import StrategyParams
 from .strategy.quant import QuantParams
+from .strategy.rules import RuleSet, build_ruleset, default_ruleset
 
 _ENV_RE = re.compile(r"\$\{([A-Z0-9_]+)(?::-([^}]*))?\}")
 
@@ -44,6 +45,8 @@ DEFAULTS: dict[str, Any] = {
     "strategy": {},
     "risk": {},
     "quant": {"enabled": True, "pairs": {}},
+    "rules": {"enabled": True, "use_defaults": True, "triggers": []},
+    "web": {"enabled": True, "host": "127.0.0.1", "port": 8787},
     "context": {"enabled": True},
     "log_dir": "logs",
 }
@@ -126,3 +129,12 @@ def build_pairs(cfg: dict) -> dict[str, str]:
         out[a] = b
         out.setdefault(b, a)
     return out
+
+
+def build_rules(cfg: dict) -> RuleSet | None:
+    r = cfg.get("rules") or {}
+    if not r.get("enabled", True):
+        return None
+    rs = default_ruleset() if r.get("use_defaults", True) else RuleSet()
+    rs.triggers.extend(build_ruleset(r.get("triggers")).triggers)
+    return rs

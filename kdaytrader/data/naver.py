@@ -96,6 +96,10 @@ class NaverFeed(DataFeed):
     def daily_candles(self, code: str, count: int = 60) -> list[Candle]:
         return self._fchart(code, "day", count)[-count:]
 
+    def index_minute_candles(self, name: str = "KOSPI", count: int = 400) -> list[Candle]:
+        """코스피/코스닥 지수 분봉 (fchart symbol=KOSPI|KOSDAQ)."""
+        return self._fchart(name.upper(), "minute", max(count, 100))[-count:]
+
     # ----- 폴링 루프 -----
     async def run(self) -> None:
         self._running = True

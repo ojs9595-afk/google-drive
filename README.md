@@ -19,6 +19,19 @@
 | 실행 | 페이퍼 브로커(슬리피지·수수료·거래세 반영), 한국투자증권 실전/모의 주문 |
 | 도구 | Rich 터미널 대시보드, 텔레그램 알림, 분봉 백테스터(수익률·승률·PF·MDD·샤프), 파라미터 그리드 탐색, 거래량 상위 스크리너 |
 
+## 다운로드 / 실행
+
+- GitHub 브랜치 ZIP: https://github.com/ojs9595-afk/google-drive/archive/refs/heads/claude/korean-stock-day-trading-11txe6.zip
+- 압축을 풀고 `start.bat`(Windows) 또는 `./start.sh`(macOS/Linux) 를 실행하면 가상환경 생성 → 의존성 설치 → 메뉴가 뜹니다.
+- 인자 없이 `python main.py` 를 실행해도 같은 메뉴가 나옵니다. 1번(데모)을 고르면 브라우저 대시보드가 자동으로 열립니다.
+
+## 웹 대시보드
+
+`run`/`demo` 실행 시 http://127.0.0.1:8787 에서 브라우저 대시보드가 열립니다 (`--open-browser` 로 자동 열기, `--no-web` 로 비활성, `--port` 로 포트 변경).
+총자산·손익·일간 수익률 KPI, 종목별 시그널 점수 바와 근거, 보유 포지션(손절/익절/R), 자산 곡선, 체결 로그,
+코스피/코스닥·시장 편향, 섹터 보드, 실시간 뉴스 감성을 1초마다 갱신하며 자동매매 ON/OFF 와 전량 청산 버튼을 제공합니다.
+라이트/다크 테마를 지원하고 추가 패키지가 필요 없습니다(표준 라이브러리 HTTP 서버).
+
 ## 설치
 
 ```bash
@@ -83,6 +96,39 @@ python main.py screen
 
 호가잔량·체결강도는 한국투자증권 웹소켓 피드에서만 제공되며, 네이버 피드에서는 `micro` 구성요소가 자동으로 제외됩니다.
 
+## gs-quant 참고 분석 계층 (`kdaytrader/analytics.py`, `kdaytrader/strategy/rules.py`)
+
+Goldman Sachs 의 오픈소스 [gs-quant](https://github.com/goldmansachs/gs-quant) (Apache-2.0) 에서 GS Marquee API 없이 쓸 수 있는
+시계열 분석과 백테스트 설계를 순수 pandas/numpy 로 옮겼습니다.
+
+| 이 프로젝트 | gs-quant 원본 | 쓰이는 곳 |
+|---|---|---|
+| `analytics.zscores / winsorize / percentiles` | `timeseries.statistics` | 평균회귀 트리거, 극단값 제한 |
+| `analytics.exponential_std / exponential_volatility / volatility` | `statistics.exponential_std`, `technicals.exponential_volatility`, `econometrics.volatility` | 백테스트 지수가중 변동성, `analyze` 명령 |
+| `analytics.beta / correlation` | `econometrics.beta / correlation` | 코스피 대비 롤링 베타 → 시장 편향을 종목 베타로 스케일(고베타 종목은 하락장에서 더 감점) |
+| `analytics.max_drawdown / drawdown_duration / sharpe / sortino / calmar` | `econometrics.max_drawdown / sharpe_ratio` | 백테스트 성과 지표 확장 |
+| `analytics.rolling_linear_regression` | `statistics.RollingLinearRegression` | 페어 헤지비율·R² (statsmodels 불필요) |
+| `analytics.backtest_basket` | `timeseries.backtesting.backtest_basket` | 섹터/관심종목 바스켓 성과 비교 |
+| `analytics.event_study` | `timeseries.event_study.event_impact_analysis` | 지수 급락 이벤트 전후 종목 반응 (`analyze` 명령) |
+| `analytics.smooth_spikes / consecutive` | `timeseries.analysis` | 이상 틱 제거, 연속 상승 카운트 |
+| `rules.MktTrigger / MeanReversionTrigger / RiskTrigger / TimeWindowTrigger / AggregateTrigger / NotTrigger` | `backtests.triggers` | 설정 파일로 정의하는 트리거 → 액션(점수 가감·진입 차단·청산) 규칙 엔진 |
+
+`config.yaml` 의 `rules.triggers` 에 gs-quant 식 규칙을 선언할 수 있습니다:
+
+```yaml
+rules:
+  enabled: true
+  use_defaults: true        # z-score 평균회귀, RSI 85 진입 차단, -1.5R 청산, 개장 직후 감점
+  triggers:
+    - {kind: mkt, column: adx, level: 40, direction: above, actions: [{type: score, score: 8}], name: 강한 추세}
+    - {kind: risk, measure: holding_min, level: 90, direction: above, actions: [{type: exit}], name: 90분 초과 청산}
+    - {kind: time, start: "14:30", end: "15:00", actions: [{type: block_entry}], name: 마감 전 진입 금지}
+```
+
+```bash
+python main.py analyze --feed naver --days 3     # 변동성·β·낙폭·z-score·지수급락 이벤트 반응·바스켓 성과
+```
+
 ## 거시·섹터·뉴스 실시간 대응 (`kdaytrader/context.py`)
 
 - **지수**: 코스피/코스닥을 5초마다 폴링. 등락률 ≤ -1.5% 또는 10분 모멘텀 ≤ -0.6% 이면 신규 진입 차단, ≤ -2.25% 면 보유분 긴급 청산.
@@ -111,7 +157,8 @@ python main.py backtest --out backtest_results                   # equity_curve.
 ## 프로젝트 구조
 
 ```
-main.py                      CLI (run / demo / backtest / screen / news)
+main.py                      CLI (run / demo / backtest / screen / news / analyze, 인자 없이 실행 시 메뉴)
+start.sh / start.bat         원클릭 실행 스크립트
 kdaytrader/
   market.py                  장 시간, 호가단위, 수수료·세금
   indicators.py              기술적 지표 (numpy/pandas)
@@ -122,6 +169,9 @@ kdaytrader/
   trader.py                  전략·리스크·브로커 연결 (엔진/백테스터 공용)
   engine.py                  실시간 비동기 엔진 + 대시보드
   backtest.py                백테스터, 그리드 탐색
+  analytics.py               gs-quant 참고 시계열 분석 (z-score, 변동성, 베타, 낙폭, 바스켓, 이벤트 스터디)
+  strategy/rules.py          gs-quant 식 트리거/액션 규칙 엔진
+  webui.py / webui.html      브라우저 대시보드
   screener.py                거래량 상위 스크리너
   dashboard.py               Rich 대시보드
   notifier.py                콘솔/텔레그램 알림

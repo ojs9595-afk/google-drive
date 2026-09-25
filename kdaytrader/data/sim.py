@@ -126,6 +126,49 @@ class SimFeed(DataFeed):
         self._ensure(code)
         return self._history[code][-count:]
 
+    def _index_path(self, name: str, which: str) -> list[Candle]:
+        """관심종목 평균 로그수익률 × 0.7 + 노이즈로 지수 경로를 합성 (베타 ≈ 0.7~1.4 로 현실적)."""
+        base = 2_650.0 if name == "KOSPI" else 780.0
+        codes = [c for c in self._history if self._history[c]]
+        if not codes:
+            return []
+        src = {c: (self._history[c] if which == "history" else self._today[c]) for c in codes}
+        n = min(len(v) for v in src.values())
+        rng = random.Random((self.seed or 0) + (11 if which == "history" else 13))
+        out: list[Candle] = []
+        level = base
+        for i in range(n):
+            rets = [math.log(src[c][i].close / src[c][i].open) for c in codes]
+            r = 0.7 * sum(rets) / len(rets) + rng.gauss(0, 0.0004)
+            o = level
+            level = o * math.exp(r)
+            hi, lo = max(o, level) * (1 + abs(rng.gauss(0, 0.0003))), min(o, level) * (1 - abs(rng.gauss(0, 0.0003)))
+            out.append(Candle(src[codes[0]][i].ts, round(o, 2), round(hi, 2), round(lo, 2), round(level, 2), 0))
+        return out
+
+    def index_minute_candles(self, name: str = "KOSPI", count: int = 400) -> list[Candle]:
+        for c in self._codes:
+            self._ensure(c)
+        hist = self._index_path(name, "history")
+        self._index_today = getattr(self, "_index_today", {})
+        today = self._index_path(name, "today")
+        if hist and today:  # 오늘 경로를 어제 종가에 이어 붙임
+            k = hist[-1].close / today[0].open
+            today = [Candle(c.ts, c.open * k, c.high * k, c.low * k, c.close * k, 0) for c in today]
+        self._index_today[name] = today
+        return hist[-count:]
+
+    def index_tick(self, ts: datetime, name: str = "KOSPI"):
+        """해당 시각의 합성 지수 (값, 전일대비 %). 실시간 엔진이 캔들 마감마다 호출."""
+        today = getattr(self, "_index_today", {}).get(name)
+        if not today:
+            return None
+        m = ts.hour * 60 + ts.minute - 9 * 60
+        if m < 0 or m >= len(today):
+            return None
+        prev_close = today[0].open
+        return today[m].close, (today[m].close / prev_close - 1) * 100
+
     def today_candles(self, code: str) -> list[Candle]:
         self._ensure(code)
         return self._today[code]

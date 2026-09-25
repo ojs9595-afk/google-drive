@@ -8,6 +8,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from . import analytics
 from .broker.base import Trade
 from .broker.paper import PaperBroker
 from .data.base import Candle
@@ -21,6 +22,7 @@ from .risk import RiskManager, RiskParams
 from .strategy.base import Strategy
 from .strategy.ensemble import EnsembleStrategy, StrategyParams
 from .strategy.quant import QuantParams, QuantSignals
+from .strategy.rules import RuleSet
 from .trader import Trader
 
 
@@ -85,6 +87,28 @@ class BacktestResult:
         return float(r.mean() / r.std() * math.sqrt(252))
 
     @property
+    def sortino(self) -> float:
+        return analytics.sortino_ratio(self.daily_returns)
+
+    @property
+    def calmar(self) -> float:
+        return analytics.calmar_ratio(self.total_return_pct, self.max_drawdown_pct, max(1, len(self.daily_returns)))
+
+    @property
+    def max_drawdown_duration_bars(self) -> int:
+        return analytics.drawdown_duration(self.equity_curve) if not self.equity_curve.empty else 0
+
+    @property
+    def exp_volatility_pct(self) -> float:
+        """지수가중 실현변동성(일간 기준 연율화 %, gs-quant exponential_volatility)."""
+        if self.equity_curve.empty:
+            return 0.0
+        daily = self.equity_curve.groupby(self.equity_curve.index.date).last()
+        daily.index = pd.DatetimeIndex(daily.index)
+        v = analytics.exponential_volatility(daily, 0.75, intraday=False).dropna()
+        return float(v.iloc[-1]) if not v.empty else 0.0
+
+    @property
     def avg_holding_minutes(self) -> float:
         return float(np.mean([t.holding_minutes for t in self.trades])) if self.trades else 0.0
 
@@ -101,6 +125,10 @@ class BacktestResult:
             "기대손익/거래": round(self.expectancy),
             "최대낙폭(%)": round(self.max_drawdown_pct, 2),
             "샤프(일간)": round(self.sharpe, 2),
+            "소르티노": round(self.sortino, 2),
+            "칼마": round(self.calmar, 2),
+            "낙폭지속(봉)": self.max_drawdown_duration_bars,
+            "지수가중변동성(%)": round(self.exp_volatility_pct, 2),
             "평균보유(분)": round(self.avg_holding_minutes, 1),
             "시그널수": self.signals,
         }
@@ -120,11 +148,13 @@ class Backtester:
         window: int = 420,
         quant_params: QuantParams | None = None,
         pairs: dict[str, str] | None = None,
+        rules: RuleSet | None = None,
     ):
         self.context = context
         self.window = window
         self.quant_params = quant_params
         self.pairs = pairs
+        self.rules = rules
         self.strategy = strategy or EnsembleStrategy(StrategyParams())
         self.risk_params = risk_params or RiskParams()
         self.initial_cash = initial_cash
@@ -141,7 +171,7 @@ class Backtester:
         ctx = self.context or MarketContext()
         qp = self.quant_params or QuantParams()
         quant = QuantSignals(store, qp, self.pairs, ctx.stock_sectors) if qp.enabled else None
-        trader = Trader(self.strategy, risk, broker, store, Notifier(console=False), names or {}, auto_trade=True, window=self.window, context=ctx, quant=quant)
+        trader = Trader(self.strategy, risk, broker, store, Notifier(console=False), names or {}, auto_trade=True, window=self.window, context=ctx, quant=quant, rules=self.rules)
 
         # 지표는 종목별로 한 번에 벡터 계산 (모든 지표가 인과적이므로 결과 동일)
         ind_params = getattr(getattr(self.strategy, "p", None), "indicator_params", lambda: None)()

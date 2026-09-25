@@ -213,7 +213,7 @@ class MarketContext:
     def update_index(self, name: str, value: float, change_pct: float, ts: datetime | None = None) -> None:
         ts = ts or datetime.now(tz=KST)
         self.index[name] = (ts, value, change_pct)
-        h = self._index_hist.setdefault(name, deque(maxlen=600))
+        h = self._index_hist.setdefault(name, deque(maxlen=5000))
         h.append((ts, value))
         self.updated_at = ts
 
@@ -232,6 +232,25 @@ class MarketContext:
         self.news.append(item)
         self.updated_at = datetime.now(tz=KST)
         return item
+
+    def index_series(self, name: str = "KOSPI"):
+        """지수 이력을 1분 종가 시계열(pd.Series)로 반환. 없으면 None."""
+        h = self._index_hist.get(name)
+        if not h or len(h) < 2:
+            return None
+        import pandas as pd
+
+        s = pd.Series([v for _, v in h], index=pd.DatetimeIndex([t for t, _ in h]))
+        return s.resample("1min").last().dropna()
+
+    def seed_index_history(self, name: str, candles) -> None:
+        """과거 지수 분봉으로 이력을 채운다 (베타/이벤트 스터디용)."""
+        h = self._index_hist.setdefault(name, deque(maxlen=5000))
+        for c in candles:
+            h.append((c.ts, c.close))
+        if candles:
+            last = candles[-1]
+            self.index.setdefault(name, (last.ts, last.close, 0.0))
 
     # ----- 계산 -----
     def index_momentum(self, name: str, minutes: int = 10) -> float:
