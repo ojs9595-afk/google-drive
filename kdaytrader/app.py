@@ -175,12 +175,13 @@ class AppController:
             return self.run_opts
 
     def stop(self, timeout: float = 10.0) -> bool:
-        eng, th = self.engine, self._thread
-        if eng is None or th is None:
-            return True
-        eng.request_stop()
-        th.join(timeout)
-        return not th.is_alive()
+        with self._lock:  # start() 와 끼어들기 방지
+            eng, th = self.engine, self._thread
+            if eng is None or th is None:
+                return True
+            eng.request_stop()
+            th.join(timeout)
+            return not th.is_alive()
 
     def state(self) -> dict:
         eng = self.engine

@@ -97,7 +97,7 @@ async function startKis() {
   const go = () => startEngine({ feed: 'kis', mode: 'live', news: true });
   if (paper) go(); else openModal('실계좌 주문 확인', '실계좌로 실제 주문이 전송됩니다. 손실이 발생할 수 있습니다.\n계속할까요?', go);
 }
-async function stopEngine() { try { await api('/api/stop', {}); toast('엔진을 정지했습니다.'); state = {}; chartData = null; const sel = $('chartCode'); sel.innerHTML = ''; sel.dataset.codes = ''; pollStatus(); } catch (e) { toast(e.message, 'err'); } }
+async function stopEngine() { try { const r = await api('/api/stop', {}); if (r.ok) toast('엔진을 정지했습니다.'); else toast('정지 요청을 보냈지만 엔진이 아직 종료 중입니다. 잠시 후 상태를 확인하세요.', 'err'); state = {}; chartData = null; const sel = $('chartCode'); sel.innerHTML = ''; sel.dataset.codes = ''; pollStatus(); } catch (e) { toast(e.message, 'err'); } }
 async function toggleAuto() { try { const r = await api('/api/toggle_auto', {}); toast('자동매매 ' + (r.auto_trade ? 'ON' : 'OFF')); pollState(); } catch (e) { toast(e.message, 'err'); } }
 function closeAll() { openModal('전량 청산', '보유 중인 모든 포지션을 현재가로 청산합니다.', async () => { try { const r = await api('/api/close_all', {}); toast(`${r.closed}개 포지션 청산 요청`, 'ok'); } catch (e) { toast(e.message, 'err'); } }); }
 
