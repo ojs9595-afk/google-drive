@@ -10,3 +10,4 @@ logs/
 data_cache/
 backtest_results/
 .token_cache.json
+*.zip
