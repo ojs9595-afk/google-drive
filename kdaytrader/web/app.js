@@ -363,7 +363,14 @@ async function loadConfig() {
   const im = document.querySelector('#page-settings [data-k="interval_min"]'); if (im) { im.min = '1'; im.step = '1'; }
   renderWatch();
 }
-function renderWatch() { $('wlEdit').innerHTML = Object.entries(cfg.watchlist).map(([c, n]) => `<span class="wchip"><b>${c}</b> ${esc(n || '')}<button title="삭제" onclick="removeWatch('${c}')">✕</button></span>`).join('') || '<span class="muted">관심종목이 없습니다.</span>'; }
+function renderWatch() { const n = Object.keys(cfg.watchlist).length; $('wlCountLbl').textContent = `현재 ${n}종목`; $('wlEdit').innerHTML = Object.entries(cfg.watchlist).map(([c, n]) => `<span class="wchip"><b>${c}</b> ${esc(n || '')}<button title="삭제" onclick="removeWatch('${c}')">✕</button></span>`).join('') || '<span class="muted">관심종목이 없습니다. 위에서 상위 N개를 불러오거나 코드를 추가하세요.</span>'; }
+function clearWatch() { openModal('관심종목 전체 비우기', '화면의 관심종목 목록을 모두 비웁니다. 저장을 눌러야 반영됩니다.', () => { cfg.watchlist = {}; renderWatch(); }); }
+async function topAdd() {
+  const market = $('topMarket').value, by = $('topBy').value, n = +$('topN').value || 30;
+  toast(`${market === 'ALL' ? '코스피+코스닥' : market} ${by === 'volume' ? '거래량' : '시가총액'} 상위 ${n}개 조회 중… (인터넷 필요)`);
+  try { const r = await api('/api/watchlist/top', { market, by, n }); cfg.watchlist = r.watchlist; renderWatch(); toast(`${Object.keys(r.added).length}개 종목을 추가해 저장했습니다 (총 ${r.total}종목).`, 'ok'); pollStatus(); }
+  catch (e) { toast(e.message, 'err'); }
+}
 async function addWatch() {
   let code = $('wlAdd').value.trim(), name = $('wlAddName').value.trim();
   if (!/^\d{1,6}$/.test(code)) { toast('종목코드는 숫자 6자리입니다.', 'err'); return; }

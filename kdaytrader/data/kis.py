@@ -363,8 +363,17 @@ class KISFeed(DataFeed):
                 msg = json.dumps({"header": {"approval_key": key, "custtype": "P", "tr_type": "2", "content-type": "utf-8"}, "body": {"input": {"tr_id": "H0STCNT0", "tr_key": c}}})
                 asyncio.run_coroutine_threadsafe(self._ws.send(msg), self._loop)
 
+    MAX_LIVE_CODES = 40  # KIS 웹소켓 실시간 등록 한도 (승인키당 41건)
+
     def subscribe(self, codes) -> None:
+        codes = list(codes)
+        room = self.MAX_LIVE_CODES - len(self._codes)
         new = [c for c in codes if c not in self._codes]
+        if len(new) > max(0, room):
+            dropped = new[max(0, room):]
+            new = new[:max(0, room)]
+            log.warning("KIS 웹소켓 실시간 등록 한도(%d)를 넘어 %d종목은 구독하지 않습니다: %s", self.MAX_LIVE_CODES, len(dropped), ", ".join(dropped[:10]))
+        codes = [c for c in codes if c in self._codes or c in new]
         super().subscribe(codes)
         # 이미 접속 중이면 새 종목을 즉시 구독
         if self._ws is not None and self._loop is not None and new:

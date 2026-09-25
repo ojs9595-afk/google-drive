@@ -482,6 +482,25 @@ class AppController:
                 log.warning("실행 중 종목 추가 실패: %s", e)
         return {"added": added, "removed": removed, "kept_positions": kept, "total": len(wl), "watchlist": wl}
 
+    def watchlist_add_top(self, market: str = "ALL", n: int = 30, by: str = "volume") -> dict:
+        """거래량/시가총액 상위 n개를 조회해 관심종목에 추가 (설정 화면·챗봇 공용)."""
+        from .screener import top_codes
+
+        kis = None
+        if (self.cfg.get("kis") or {}).get("app_key"):
+            try:
+                from .factory import make_kis_client
+
+                kis = make_kis_client(self.cfg)
+            except Exception:
+                kis = None
+        found = top_codes(market, max(1, min(int(n), 200)), by, set(self.cfg.get("watchlist") or {}), kis)
+        if not found:
+            raise RuntimeError("조회된 종목이 없습니다 (이미 모두 관심종목에 있거나 인터넷 연결 문제). 홈의 연결 진단을 확인하세요.")
+        res = self.watchlist_update(add=found)
+        res["found"] = found
+        return res
+
     def set_settings(self, values: dict[str, object]) -> dict:
         """'risk.atr_stop_mult' 같은 점 경로로 설정을 바꾸고 저장한다."""
         raw = self._raw_config()
@@ -662,6 +681,8 @@ class AppServer:
                         return self._json(ctl.chat(str(body.get("message", "")), body.get("history") or [], bool(body.get("confirm"))))
                     if u.path == "/api/watchlist":
                         return self._json(ctl.watchlist_update(body.get("add") or {}, body.get("remove") or []))
+                    if u.path == "/api/watchlist/top":
+                        return self._json(ctl.watchlist_add_top(str(body.get("market", "ALL")), int(body.get("n", 30)), str(body.get("by", "volume"))))
                     if u.path == "/api/backtest":
                         ctl.backtest_start(int(body.get("days", 10)), body.get("codes"), body.get("feed", "sim"), int(body.get("seed", 1)))
                         return self._json({"ok": True})

@@ -143,8 +143,9 @@ class NaverFeed(DataFeed):
     # ----- 폴링 루프 -----
     async def run(self) -> None:
         self._running = True
-        if getattr(self._pool, "_shutdown", False):
-            self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="naver")
+        workers = min(16, max(6, len(self._codes) // 6))
+        if getattr(self._pool, "_shutdown", False) or getattr(self._pool, "_max_workers", 0) < workers:
+            self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="naver")
         loop = asyncio.get_running_loop()
         last_key: dict[str, tuple] = {}
         last_emit: dict[str, datetime] = {}

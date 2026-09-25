@@ -266,7 +266,9 @@
         <div class="card"><h2>기본</h2><div class="form" id="fGeneral"></div></div>
         <div class="card"><h2>한국투자증권 API</h2><div class="form" id="fKis"></div><p class="muted small">앱키·시크릿은 이 컴퓨터의 config.yaml 에만 저장됩니다. 모의투자 서버(paper) 로 먼저 검증하세요.</p></div>
         <div class="card span2"><h2>관심종목</h2>
-          <div class="form-row"><input type="text" id="wlAdd" placeholder="종목코드 6자리 (예: 005930)"><input type="text" id="wlAddName" placeholder="종목명 (비우면 자동 조회)"><button class="btn sm" onclick="addWatch()">추가</button><button class="btn sm ghost" onclick="screenAdd()">거래량 상위 불러오기</button></div>
+          <div class="form-row"><input type="text" id="wlAdd" placeholder="종목코드 6자리 (예: 005930)"><input type="text" id="wlAddName" placeholder="종목명 (비우면 자동 조회)"><button class="btn sm" onclick="addWatch()">추가</button></div>
+          <div class="form-row"><label>시장 <select id="topMarket"><option value="ALL">코스피+코스닥</option><option value="KOSPI">코스피</option><option value="KOSDAQ">코스닥</option></select></label><label>기준 <select id="topBy"><option value="volume">거래량</option><option value="marketcap">시가총액</option></select></label><label>종목 수 <input type="number" id="topN" value="30" min="1" max="200" style="width:90px"></label><button class="btn sm primary" onclick="topAdd()">상위 N개 불러와 추가</button><button class="btn sm ghost" onclick="clearWatch()">전체 비우기</button><span class="muted small" id="wlCountLbl"></span></div>
+          <p class="muted small">한국투자증권 웹소켓은 실시간 등록이 약 40종목까지입니다(초과분은 자동 제외). 네이버 폴링은 종목이 많을수록 갱신 주기가 길어집니다. 인터넷 연결이 필요합니다.</p>
           <div id="wlEdit" class="chips"></div>
         </div>
         <div class="card"><h2>리스크</h2><div class="form" id="fRisk"></div></div>
