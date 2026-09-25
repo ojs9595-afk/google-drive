@@ -186,7 +186,12 @@ class SimFeed(DataFeed):
             if not self._running:
                 break
             for k in range(self.ticks_per_minute):
-                for code in self._codes:
+                for code in list(self._codes):
+                    if code not in self._today:
+                        self._ensure(code)
+                        acc.setdefault(code, 0)
+                        buy_acc.setdefault(code, 0)
+                        sell_acc.setdefault(code, 0)
                     candle = self._today[code][m]
                     path = [candle.open, candle.high, candle.low, candle.close]
                     if k == 0:

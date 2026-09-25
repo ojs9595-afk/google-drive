@@ -19,10 +19,8 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 
 from kdaytrader.config import build_pairs, build_quant_params, build_risk_params, build_rules, build_strategy_params, load_config
-from kdaytrader.context import ContextParams, MarketContext, ScheduledEvent
+from kdaytrader.factory import ConfigError, build_context, build_engine, make_feed_and_broker, make_kis_client, resolve_watchlist
 from kdaytrader.market import KST, now_kst
-from kdaytrader.notifier import Notifier
-from kdaytrader.risk import RiskManager
 from kdaytrader.strategy.ensemble import EnsembleStrategy
 
 
@@ -34,124 +32,27 @@ def setup_logging(log_dir: str, quiet_console: bool) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=handlers)
 
 
-def build_context(cfg: dict, watchlist: dict[str, str]) -> MarketContext:
-    ctx_cfg = cfg.get("context") or {}
-    params = ContextParams(**{k: v for k, v in ctx_cfg.items() if k in ContextParams.__dataclass_fields__})
-    events = []
-    for ev in ctx_cfg.get("events") or []:
-        h, m = str(ev["time"]).split(":")
-        d = None
-        if ev.get("date"):
-            d = datetime.strptime(str(ev["date"]), "%Y-%m-%d").date()
-        events.append(ScheduledEvent(ev["name"], dtime(int(h), int(m)), int(ev.get("before_min", 10)), int(ev.get("after_min", 15)), d))
-    ctx = MarketContext(params, ctx_cfg.get("sectors") or {}, watchlist, events)
-    ctx.enabled = bool(ctx_cfg.get("enabled", True))
-    return ctx
-
-
-def build_collectors(cfg: dict, ctx: MarketContext, watchlist: dict[str, str], kis_client=None) -> list:
-    from kdaytrader.data.news import DEFAULT_RSS, IndexCollector, NewsCollector
-
-    ctx_cfg = cfg.get("context") or {}
-    if not ctx_cfg.get("enabled", True):
-        return []
-    rss = [(r["name"], r["url"]) for r in ctx_cfg.get("rss") or []] or DEFAULT_RSS
-    stock_q = watchlist if ctx_cfg.get("stock_news", True) else {}
-    return [
-        NewsCollector(ctx, rss, stock_q, float(ctx_cfg.get("news_poll_sec", 60))),
-        IndexCollector(ctx, float(ctx_cfg.get("index_poll_sec", 5)), kis_client),
-    ]
-
-
-def make_feed_and_broker(cfg: dict, feed_name: str, mode: str, watchlist: dict[str, str]):
-    from kdaytrader.broker.paper import PaperBroker
-
-    kis_client = None
-    if feed_name == "kis" or mode == "live":
-        from kdaytrader.data.kis import KISClient
-
-        k = cfg["kis"]
-        kis_client = KISClient(k["app_key"], k["app_secret"], k["account"], paper=bool(k.get("paper", True)))
-
-    if feed_name == "sim":
-        from kdaytrader.data.sim import SimFeed
-
-        s = cfg["sim"]
-        feed = SimFeed(speed=float(s.get("speed", 60)), history_days=int(s.get("history_days", 3)), seed=s.get("seed"))
-    elif feed_name == "naver":
-        from kdaytrader.data.naver import NaverFeed
-
-        feed = NaverFeed(poll_interval=float(cfg["naver"].get("poll_interval", 1.5)))
-    elif feed_name == "kis":
-        from kdaytrader.data.kis import KISFeed
-
-        feed = KISFeed(kis_client)
-    else:
-        raise SystemExit(f"알 수 없는 feed: {feed_name}")
-
-    if mode == "live":
-        from kdaytrader.broker.kis import KISBroker
-
-        broker = KISBroker(kis_client)
-    else:
-        broker = PaperBroker(float(cfg["initial_cash"]))
-    return feed, broker, kis_client
-
-
-def resolve_watchlist(cfg: dict, args, kis_client=None) -> dict[str, str]:
-    if getattr(args, "codes", None):
-        wl = {}
-        for c in args.codes.split(","):
-            c = c.strip().zfill(6)
-            wl[c] = cfg["watchlist"].get(c, "")
-        return wl
-    sc = cfg.get("screener") or {}
-    if sc.get("enabled"):
-        from kdaytrader.screener import screen
-
-        found = screen(sc.get("source", "naver"), int(sc.get("limit", 15)), float(sc.get("min_price", 2000)), float(sc.get("max_price", 500000)), kis_client=kis_client)
-        if found:
-            merged = dict(found)
-            merged.update(cfg["watchlist"])
-            return merged
-    return dict(cfg["watchlist"])
+def _watchlist_from_args(cfg: dict, args, kis_client=None) -> dict[str, str]:
+    return resolve_watchlist(cfg, getattr(args, "codes", None), kis_client)
 
 
 def cmd_run(args, cfg: dict) -> None:
-    from kdaytrader.engine import TradingEngine
-
     mode = args.mode or cfg["mode"]
     feed_name = args.feed or cfg["feed"]
-    if mode == "live":
+    if mode == "live" and not bool((cfg.get("kis") or {}).get("paper", True)):
         print("⚠ 실계좌 주문 모드입니다. 손실이 발생할 수 있습니다. 계속하려면 'yes' 입력:", end=" ")
         if input().strip().lower() != "yes":
             raise SystemExit("취소")
     setup_logging(cfg["log_dir"], quiet_console=not args.no_dashboard)
-    feed, broker, kis_client = make_feed_and_broker(cfg, feed_name, mode, cfg["watchlist"])
-    watchlist = resolve_watchlist(cfg, args, kis_client)
-    if feed_name == "naver" and not all(watchlist.values()):
-        try:
-            for c, n in watchlist.items():
-                if not n:
-                    t = feed.fetch_quote(c)
-                    if t and t.name:
-                        watchlist[c] = t.name
-        except Exception:
-            pass
-    strategy = EnsembleStrategy(build_strategy_params(cfg))
-    risk = RiskManager(build_risk_params(cfg))
-    tg = cfg.get("telegram") or {}
-    notifier = Notifier(tg.get("token", ""), tg.get("chat_id", ""), console=True)
-    ctx = build_context(cfg, watchlist)
-    collectors = build_collectors(cfg, ctx, watchlist, kis_client) if not args.no_news else []
-    engine = TradingEngine(
-        feed, broker, strategy, risk, watchlist,
-        interval_min=int(cfg["interval_min"]), auto_trade=bool(cfg["auto_trade"]) and not args.signal_only,
-        notifier=notifier, context=ctx, collectors=collectors, mode=mode, use_dashboard=not args.no_dashboard,
-        quant_params=build_quant_params(cfg), pairs=build_pairs(cfg), rules=build_rules(cfg),
-        web_host=(cfg["web"].get("host", "127.0.0.1") if (cfg["web"].get("enabled", True) and not args.no_web) else ""),
-        web_port=int(args.port or cfg["web"].get("port", 8787)),
-    )
+    web_on = cfg["web"].get("enabled", True) and not args.no_web
+    try:
+        engine = build_engine(
+            cfg, feed_name, mode, codes=args.codes,
+            auto_trade=(False if args.signal_only else None), use_dashboard=not args.no_dashboard, use_news=not args.no_news,
+            web_host=(cfg["web"].get("host", "127.0.0.1") if web_on else ""), web_port=int(args.port or cfg["web"].get("port", 8787)),
+        )
+    except ConfigError as e:
+        raise SystemExit(f"설정 오류: {e}")
     if engine.web is not None:
         print(f"웹 대시보드: {engine.web.url}  (브라우저에서 열어 주세요)")
         if args.open_browser:
@@ -180,7 +81,7 @@ def cmd_backtest(args, cfg: dict) -> None:
     from kdaytrader.backtest import Backtester, grid_search
 
     setup_logging(cfg["log_dir"], quiet_console=False)
-    watchlist = resolve_watchlist(cfg, args)
+    watchlist = _watchlist_from_args(cfg, args)
     feed_name = args.feed or ("sim" if cfg["feed"] == "sim" else cfg["feed"])
     data = {}
     if feed_name == "sim":
@@ -189,7 +90,10 @@ def cmd_backtest(args, cfg: dict) -> None:
         for i, code in enumerate(watchlist):
             data[code] = generate_history(code, args.days, DEFAULT_BASE_PRICES.get(code, 50_000), seed=(args.seed or 0) + i * 100)
     else:
-        feed, _, _ = make_feed_and_broker(cfg, feed_name, "paper", watchlist)
+        try:
+            feed, _, _ = make_feed_and_broker(cfg, feed_name, "paper")
+        except ConfigError as e:
+            raise SystemExit(f"설정 오류: {e}")
         for code in watchlist:
             try:
                 data[code] = feed.minute_candles(code, args.days * 390, int(cfg["interval_min"]))
@@ -233,10 +137,10 @@ def cmd_screen(args, cfg: dict) -> None:
     sc = cfg.get("screener") or {}
     kis_client = None
     if (args.source or sc.get("source")) == "kis":
-        from kdaytrader.data.kis import KISClient
-
-        k = cfg["kis"]
-        kis_client = KISClient(k["app_key"], k["app_secret"], k["account"], paper=bool(k.get("paper", True)))
+        try:
+            kis_client = make_kis_client(cfg)
+        except ConfigError as e:
+            raise SystemExit(f"설정 오류: {e}")
     found = screen(args.source or sc.get("source", "naver"), args.limit or int(sc.get("limit", 15)), kis_client=kis_client)
     for c, n in found.items():
         print(c, n)
@@ -275,14 +179,17 @@ def cmd_analyze(args, cfg: dict) -> None:
     from kdaytrader import analytics
     from kdaytrader.data.base import candles_to_df
 
-    watchlist = resolve_watchlist(cfg, args)
+    watchlist = _watchlist_from_args(cfg, args)
     feed_name = args.feed or ("sim" if cfg["feed"] == "sim" else cfg["feed"])
     if feed_name == "sim":
         from kdaytrader.data.sim import SimFeed
 
         feed = SimFeed(history_days=args.days, seed=1)
     else:
-        feed, _, _ = make_feed_and_broker(cfg, feed_name, "paper", watchlist)
+        try:
+            feed, _, _ = make_feed_and_broker(cfg, feed_name, "paper")
+        except ConfigError as e:
+            raise SystemExit(f"설정 오류: {e}")
     feed.subscribe(list(watchlist.keys()))
     loaded: dict[str, pd.DataFrame] = {}
     for code in watchlist:

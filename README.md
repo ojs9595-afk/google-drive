@@ -157,8 +157,10 @@ python main.py backtest --out backtest_results                   # equity_curve.
 ## 프로젝트 구조
 
 ```
+KDayTrader.bat / .command / .sh   원클릭 실행 (그래픽 앱)
+launcher.py                  의존성 설치 → 앱 서버 → 브라우저 열기
 main.py                      CLI (run / demo / backtest / screen / news / analyze, 인자 없이 실행 시 메뉴)
-start.sh / start.bat         원클릭 실행 스크립트
+start.sh / start.bat         CLI 메뉴 실행 스크립트
 kdaytrader/
   market.py                  장 시간, 호가단위, 수수료·세금
   indicators.py              기술적 지표 (numpy/pandas)
@@ -171,7 +173,12 @@ kdaytrader/
   backtest.py                백테스터, 그리드 탐색
   analytics.py               gs-quant 참고 시계열 분석 (z-score, 변동성, 베타, 낙폭, 바스켓, 이벤트 스터디)
   strategy/rules.py          gs-quant 식 트리거/액션 규칙 엔진
-  webui.py / webui.html      브라우저 대시보드
+  app.py                     그래픽 앱 백엔드 (엔진 수명주기, 설정 편집, 백테스트 작업, 차트/뉴스/수익률/진단 API)
+  web/                       그래픽 앱 프런트엔드 (index.html, app.js, app.css)
+  factory.py                 설정 → 피드/브로커/엔진 조립 (CLI·앱 공용)
+  performance.py             수익률 관리 (거래 CSV 누적, 일/월/종목/사유/시간대 통계)
+  diagnostics.py             인터넷 데이터 소스 연결 진단
+  webui.py / webui.html      CLI 용 간이 브라우저 대시보드
   screener.py                거래량 상위 스크리너
   dashboard.py               Rich 대시보드
   notifier.py                콘솔/텔레그램 알림

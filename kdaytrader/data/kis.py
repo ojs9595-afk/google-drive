@@ -339,6 +339,20 @@ class KISFeed(DataFeed):
     def __init__(self, client: KISClient):
         super().__init__()
         self.client = client
+        self._ws = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def _sub_msg(self, code: str, key: str) -> str:
+        return json.dumps({"header": {"approval_key": key, "custtype": "P", "tr_type": "1", "content-type": "utf-8"}, "body": {"input": {"tr_id": "H0STCNT0", "tr_key": code}}})
+
+    def subscribe(self, codes) -> None:
+        new = [c for c in codes if c not in self._codes]
+        super().subscribe(codes)
+        # 이미 접속 중이면 새 종목을 즉시 구독
+        if self._ws is not None and self._loop is not None and new:
+            key = self.client.approval_key()
+            for c in new:
+                asyncio.run_coroutine_threadsafe(self._ws.send(self._sub_msg(c, key)), self._loop)
 
     def minute_candles(self, code: str, count: int = 400, interval: int = 1) -> list[Candle]:
         candles = self.client.minute_candles(code, count * interval)
@@ -360,15 +374,9 @@ class KISFeed(DataFeed):
             try:
                 key = self.client.approval_key()
                 async with websockets.connect(self.client.ws_url, ping_interval=None) as ws:
-                    for code in self._codes:
-                        await ws.send(
-                            json.dumps(
-                                {
-                                    "header": {"approval_key": key, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
-                                    "body": {"input": {"tr_id": "H0STCNT0", "tr_key": code}},
-                                }
-                            )
-                        )
+                    self._ws, self._loop = ws, asyncio.get_running_loop()
+                    for code in list(self._codes):
+                        await ws.send(self._sub_msg(code, key))
                     backoff = 1
                     while self._running:
                         msg = await ws.recv()
@@ -395,3 +403,5 @@ class KISFeed(DataFeed):
                 log.warning("KIS 웹소켓 오류, %ss 후 재접속: %s", backoff, e)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
+            finally:
+                self._ws = None

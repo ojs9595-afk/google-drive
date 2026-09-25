@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 import requests
 
@@ -37,39 +38,78 @@ def _num(v) -> float:
 class NaverFeed(DataFeed):
     name = "naver"
 
-    def __init__(self, poll_interval: float = 1.5, session: requests.Session | None = None):
+    def __init__(self, poll_interval: float = 1.5, session: requests.Session | None = None, max_workers: int = 6):
         super().__init__()
-        self.poll_interval = poll_interval
+        self.poll_interval = max(0.5, float(poll_interval))
         self.session = session or requests.Session()
         self.session.headers.update(_UA)
         self._names: dict[str, str] = {}
+        self.market_status: str = ""  # OPEN / CLOSE / PREOPEN 등 (네이버 응답)
+        self.last_error: str = ""
+        self.consecutive_failures = 0
+        self.fetch_ok = 0
+        self.fetch_fail = 0
+        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="naver")
 
     # ----- 현재가 -----
-    def fetch_quote(self, code: str) -> Tick | None:
+    def _quote_polling(self, code: str) -> dict | None:
         url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-        try:
-            r = self.session.get(url, timeout=5)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:  # pragma: no cover - network
-            log.warning("naver quote %s 실패: %s", code, e)
+        r = self.session.get(url, timeout=5)
+        r.raise_for_status()
+        datas = r.json().get("datas") or []
+        return datas[0] if datas else None
+
+    def _quote_mobile(self, code: str) -> dict | None:
+        """대체 엔드포인트 (모바일 API). 필드명이 polling 과 대체로 같다."""
+        url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        r = self.session.get(url, timeout=5)
+        r.raise_for_status()
+        d = r.json()
+        return d if isinstance(d, dict) and d.get("closePrice") else None
+
+    def fetch_quote(self, code: str) -> Tick | None:
+        d = None
+        err = None
+        for fn in (self._quote_polling, self._quote_mobile):
+            try:
+                d = fn(code)
+                if d:
+                    break
+            except Exception as e:  # pragma: no cover - network
+                err = e
+        if not d:
+            self.fetch_fail += 1
+            self.consecutive_failures += 1
+            if err is not None:
+                self.last_error = f"{code}: {type(err).__name__}: {str(err)[:100]}"
+                if self.consecutive_failures in (1, 10, 100) or self.consecutive_failures % 500 == 0:
+                    log.warning("네이버 시세 조회 실패(%d회 연속) %s", self.consecutive_failures, self.last_error)
             return None
-        datas = data.get("datas") or []
-        if not datas:
-            return None
-        d = datas[0]
         price = _num(d.get("closePrice"))
         if price <= 0:
             return None
-        name = d.get("stockName", "")
-        self._names[code] = name
-        sign = -1.0 if str(d.get("compareToPreviousPrice", {}).get("code", "")) in ("4", "5") else 1.0
+        self.fetch_ok += 1
+        self.consecutive_failures = 0
+        name = d.get("stockName", "") or d.get("stockName2", "")
+        if name:
+            self._names[code] = name
+        ms = d.get("marketStatus")
+        if ms:
+            self.market_status = str(ms)
+        sign_code = str((d.get("compareToPreviousPrice") or {}).get("code", ""))
         change_pct = _num(d.get("fluctuationsRatio"))
-        if change_pct > 0 and sign < 0:
+        if sign_code in ("4", "5") and change_pct > 0:
             change_pct = -change_pct
+        ts = datetime.now(tz=KST)
+        traded = d.get("localTradedAt")
+        if traded:
+            try:
+                ts = datetime.fromisoformat(str(traded)).astimezone(KST)
+            except ValueError:
+                pass
         return Tick(
             code=code,
-            ts=datetime.now(tz=KST),
+            ts=ts,
             price=price,
             volume=0,
             acc_volume=int(_num(d.get("accumulatedTradingVolume"))),
@@ -105,17 +145,33 @@ class NaverFeed(DataFeed):
         self._running = True
         loop = asyncio.get_running_loop()
         last_key: dict[str, tuple] = {}
+        last_emit: dict[str, datetime] = {}
         while self._running:
-            for code in list(self._codes):
-                tick = await loop.run_in_executor(None, self.fetch_quote, code)
-                if tick is None:
+            started = loop.time()
+            codes = list(self._codes)
+            try:
+                ticks = await loop.run_in_executor(None, lambda: list(self._pool.map(self.fetch_quote, codes)))
+            except Exception as e:  # pragma: no cover
+                log.warning("네이버 폴링 오류: %s", e)
+                ticks = []
+            now = datetime.now(tz=KST)
+            for tick in ticks:
+                if tick is None or not self._running:
                     continue
                 key = (tick.price, tick.acc_volume)
-                if last_key.get(code) == key:
-                    continue  # 변화 없음
-                last_key[code] = key
+                # 변화가 없어도 30초마다 한 번은 흘려보내 캔들이 닫히도록 한다
+                if last_key.get(tick.code) == key and now - last_emit.get(tick.code, now - timedelta(days=1)) < timedelta(seconds=30):
+                    continue
+                last_key[tick.code] = key
+                last_emit[tick.code] = now
+                # 폴링 시각이 체결 시각보다 뒤이므로 캔들 집계는 현재 시각 기준으로 한다
+                tick.ts = now
                 await self._emit(tick)
-            await asyncio.sleep(self.poll_interval)
+            elapsed = loop.time() - started
+            await asyncio.sleep(max(0.2, self.poll_interval - elapsed))
+
+    def stop(self) -> None:
+        super().stop()
 
 
 _ITEM_RE = re.compile(r'<item data="([^"]+)"')

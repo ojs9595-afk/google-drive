@@ -37,10 +37,23 @@ class TradeEvent:
 
 
 @dataclass
+class SignalEvent:
+    ts: datetime
+    code: str
+    name: str
+    kind: str  # 매수 | 매수대기 | 매도 | 청산 | 주의
+    score: float
+    price: float
+    reasons: list[str]
+    executed: bool = False
+
+
+@dataclass
 class TraderState:
     last_signal: dict[str, Signal] = field(default_factory=dict)
     last_indicators: dict[str, pd.Series] = field(default_factory=dict)
     events: list[TradeEvent] = field(default_factory=list)
+    signal_log: list[SignalEvent] = field(default_factory=list)
     candles_seen: int = 0
 
 
@@ -202,8 +215,10 @@ class Trader:
         if notes:
             sig.reasons.extend(notes)
         self.state.last_indicators[code] = ind.iloc[-1]
+        prev_sig = self.state.last_signal.get(code)
         self.state.last_signal[code] = sig
         self.state.candles_seen += 1
+        self._log_signal(sig, prev_sig, has_pos, now)
 
         if sig.action == Action.BUY:
             if self.auto_trade:
@@ -218,6 +233,30 @@ class Trader:
             else:
                 self.notifier.send(f"[매도 신호] {self.name(code)} {reason} @{sig.price:,.0f}")
         return sig
+
+    def _log_signal(self, sig: Signal, prev: Signal | None, has_pos: bool, now: datetime) -> None:
+        """임계값을 넘거나 넘어선 순간(교차)만 시그널 로그에 남기고 알린다."""
+        p = getattr(self.strategy, "p", None)
+        buy_t = getattr(p, "buy_threshold", 55.0)
+        sell_t = getattr(p, "sell_threshold", -35.0)
+        prev_score = prev.score if prev is not None else 0.0
+        kind = None
+        if sig.action == Action.BUY:
+            kind = "매수"
+        elif sig.action == Action.SELL:
+            kind = "청산"
+        elif sig.score >= buy_t and prev_score < buy_t:
+            kind = "매수대기" if not has_pos else None
+        elif sig.score <= sell_t and prev_score > sell_t:
+            kind = "매도" if not has_pos else None
+        if kind is None:
+            return
+        ev = SignalEvent(now, sig.code, self.name(sig.code), kind, sig.score, sig.price, sig.reasons[:4], executed=(kind in ("매수", "청산") and self.auto_trade))
+        self.state.signal_log.append(ev)
+        if len(self.state.signal_log) > 500:
+            self.state.signal_log = self.state.signal_log[-500:]
+        if kind in ("매수대기", "매도"):
+            self.notifier.send(f"[{kind} 시그널] {ev.name}({sig.code}) 점수 {sig.score:+.0f} @{sig.price:,.0f} | " + ", ".join(sig.reasons[:3]))
 
     def _beta_adjustment(self, code: str, ind: pd.DataFrame, market_bias: float) -> float:
         """코스피 분봉이 있으면 롤링 베타를 구해 시장 편향 보정치를 돌려준다."""
