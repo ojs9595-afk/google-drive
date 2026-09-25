@@ -97,10 +97,24 @@ def main() -> int:
         handlers=[logging.FileHandler(ROOT / "logs" / f"app_{time.strftime('%Y%m%d')}.log", encoding="utf-8")],
     )
     port = find_free_port(args.host, args.port)
-    ctl = AppController(str(cfg_path))
-    server = AppServer(ctl, args.host, port)
-    server.start()
-    url = server.url
+    try:
+        ctl = AppController(str(cfg_path))
+    except Exception as e:  # 설정 파일이 심하게 깨진 경우에도 안내 후 종료
+        _print(f"설정을 읽는 중 오류가 났습니다: {type(e).__name__}: {e}")
+        _print(f"{cfg_path.name} 을 고치거나 삭제(기본값으로 재생성) 후 다시 실행하세요.")
+        input("엔터를 누르면 종료합니다…")
+        return 1
+    if ctl.cfg.get("_config_error"):
+        _print(f"⚠ {ctl.cfg['_config_error']}\n   기본 설정으로 시작합니다. 설정 탭에서 저장하면 파일이 다시 만들어집니다.")
+    try:
+        server = AppServer(ctl, args.host, port)
+        server.start()
+    except OSError as e:
+        _print(f"서버를 시작할 수 없습니다 (포트 {port}): {e}")
+        input("엔터를 누르면 종료합니다…")
+        return 1
+    open_host = "127.0.0.1" if args.host in ("0.0.0.0", "", "::") else args.host
+    url = f"http://{open_host}:{port}"
     _print(f"\n  ▶ 브라우저에서 열기:  {url}\n")
     _print("  이 창을 닫으면 프로그램이 종료됩니다. (Ctrl+C 로 종료)")
     if not args.no_browser:

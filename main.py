@@ -56,9 +56,21 @@ def cmd_run(args, cfg: dict) -> None:
     if engine.web is not None:
         print(f"웹 대시보드: {engine.web.url}  (브라우저에서 열어 주세요)")
         if args.open_browser:
+            import socket
+            import threading
+            import time as _t
             import webbrowser
 
-            webbrowser.open(engine.web.url)
+            def _open_when_ready(host: str, port: int, url: str) -> None:
+                for _ in range(60):  # 서버가 뜰 때까지 최대 30초 대기
+                    try:
+                        with socket.create_connection((host, port), 0.5):
+                            break
+                    except OSError:
+                        _t.sleep(0.5)
+                webbrowser.open(url)
+
+            threading.Thread(target=_open_when_ready, args=(engine.web.host, engine.web.port, engine.web.url), daemon=True).start()
     try:
         asyncio.run(engine.run())
     except KeyboardInterrupt:
@@ -261,13 +273,13 @@ def interactive_menu() -> list[str] | None:
     choice = input("선택 > ").strip()
     table = {
         "1": ["demo", "--open-browser"],
-        "2": ["backtest", "--days", "10", "--trades"],
+        "2": ["backtest", "--feed", "sim", "--days", "10", "--trades"],
         "3": ["run", "--feed", "naver", "--signal-only", "--open-browser"],
         "4": ["run", "--feed", "naver", "--mode", "paper", "--open-browser"],
         "5": ["run", "--feed", "kis", "--mode", "live", "--open-browser"],
         "6": ["news", "--stocks"],
         "7": ["screen"],
-        "8": ["analyze"],
+        "8": ["analyze", "--feed", "sim"],
     }
     if choice in ("0", ""):
         return None
@@ -336,8 +348,15 @@ def main(argv=None) -> None:
     if args.cmd is None:
         ap.print_help()
         return
-    cfg = load_config(args.config)
-    {"run": cmd_run, "demo": cmd_demo, "backtest": cmd_backtest, "screen": cmd_screen, "news": cmd_news, "analyze": cmd_analyze}[args.cmd](args, cfg)
+    try:
+        cfg = load_config(args.config)
+        if cfg.get("_config_error"):
+            print(f"⚠ 설정 파일 경고: {cfg['_config_error']} — 기본값으로 계속합니다.", file=sys.stderr)
+        {"run": cmd_run, "demo": cmd_demo, "backtest": cmd_backtest, "screen": cmd_screen, "news": cmd_news, "analyze": cmd_analyze}[args.cmd](args, cfg)
+    except (ConfigError, ValueError) as e:
+        raise SystemExit(f"설정 오류: {e}")
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"JSON 형식 오류 (--grid 등): {e}")
 
 
 if __name__ == "__main__":

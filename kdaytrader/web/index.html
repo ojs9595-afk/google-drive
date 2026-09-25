@@ -13,20 +13,20 @@
   <aside class="side">
     <div class="brand"><span class="logo">📈</span><div><b>K-DayTrader</b><small id="ver">v0.1.0</small></div></div>
     <nav>
-      <button data-page="home" class="active"><i>🏠</i>홈</button>
-      <button data-page="dash"><i>📊</i>대시보드</button>
-      <button data-page="reco"><i>🎯</i>추천 종목</button>
-      <button data-page="chart"><i>🕯️</i>차트</button>
-      <button data-page="perf"><i>💰</i>수익률 관리</button>
-      <button data-page="backtest"><i>🧪</i>백테스트</button>
-      <button data-page="news"><i>📰</i>뉴스·거시</button>
-      <button data-page="settings"><i>⚙️</i>설정</button>
-      <button data-page="logs"><i>📜</i>로그</button>
+      <button data-page="home" class="active"><i>🏠</i><span>홈</span></button>
+      <button data-page="dash"><i>📊</i><span>대시보드</span></button>
+      <button data-page="reco"><i>🎯</i><span>추천 종목</span></button>
+      <button data-page="chart"><i>🕯️</i><span>차트</span></button>
+      <button data-page="perf"><i>💰</i><span>수익률 관리</span></button>
+      <button data-page="backtest"><i>🧪</i><span>백테스트</span></button>
+      <button data-page="news"><i>📰</i><span>뉴스·거시</span></button>
+      <button data-page="settings"><i>⚙️</i><span>설정</span></button>
+      <button data-page="logs"><i>📜</i><span>로그</span></button>
     </nav>
     <div class="side-foot">
       <div class="engine-pill" id="enginePill"><span class="dot"></span><span id="engineText">엔진 대기</span></div>
-      <button class="btn danger sm" id="stopBtn" onclick="stopEngine()" style="display:none">■ 엔진 정지</button>
-      <button class="btn ghost sm" onclick="toggleTheme()">🌗 테마</button>
+      <button class="btn danger sm" id="stopBtn" onclick="stopEngine()" style="display:none" title="엔진 정지">■ <span>엔진 정지</span></button>
+      <button class="btn ghost sm" onclick="toggleTheme()" title="테마 전환">🌗 <span>테마</span></button>
     </div>
   </aside>
 
@@ -49,6 +49,7 @@
         <p>기술적 분석 앙상블 + 퀀트 알파 + 거시·섹터·뉴스 컨텍스트로 매수·매도 시그널을 만들고, 리스크 규칙에 따라 자동(또는 알림만) 매매합니다.<br>
         아래에서 실행 방식을 고르면 바로 시작됩니다. 처음이라면 <b>체험하기</b>를 눌러 보세요.</p>
         <div id="homeAlert" class="alert" style="display:none"></div>
+        <div id="cfgAlert" class="alert" style="display:none"></div>
       </div>
       <div class="cards">
         <div class="card launch">
@@ -177,6 +178,7 @@
     <section class="page" id="page-perf">
       <div class="toolbar">
         <label>기간 <select id="perfDays" onchange="loadPerf()"><option value="7">최근 7일</option><option value="30" selected>최근 30일</option><option value="90">최근 90일</option><option value="365">최근 1년</option><option value="0">전체</option></select></label>
+        <label>대상 <select id="perfSource" onchange="loadPerf()"><option value="0">실거래·페이퍼</option><option value="1">시뮬레이션 포함</option></select></label>
         <button class="btn sm" onclick="loadPerf()">🔄 새로고침</button>
         <a class="btn sm ghost" id="perfCsv" href="/api/performance.csv" download>⬇ 거래내역 CSV</a>
         <span class="muted small" id="perfMeta"></span>

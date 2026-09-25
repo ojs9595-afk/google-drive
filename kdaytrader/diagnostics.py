@@ -54,10 +54,14 @@ def _check_kis(cfg: dict) -> dict:
     try:
         from .data.kis import KISClient
 
-        c = KISClient(k["app_key"], k["app_secret"], k.get("account", ""), paper=bool(k.get("paper", True)), token_cache=None)
+        c = KISClient(k["app_key"], k["app_secret"], k.get("account", ""), paper=bool(k.get("paper", True)))  # 토큰 캐시 공유 (1분당 1회 발급 제한)
         c.token()
         px = c.current_price("005930")
-        return {"key": "kis", "label": "한국투자증권 API" + (" (모의)" if c.paper else " (실전)"), "ok": True, "ms": round((time.time() - t0) * 1000), "detail": f"토큰 발급 OK · 삼성전자 {px.get('stck_prpr', '?')}"}
+        return {"key": "kis", "label": "한국투자증권 API" + (" (모의)" if c.paper else " (실전)"), "ok": True, "ms": round((time.time() - t0) * 1000), "detail": f"토큰 OK · 삼성전자 {px.get('stck_prpr', '?')}"}
+    except requests.exceptions.HTTPError as e:
+        code = getattr(e.response, "status_code", 0)
+        hint = " · 토큰 발급은 1분당 1회 제한 — 잠시 후 다시 시도" if code == 403 else ""
+        return {"key": "kis", "label": "한국투자증권 API", "ok": False, "ms": round((time.time() - t0) * 1000), "detail": f"HTTP {code}{hint}: {str(e)[:120]}"}
     except Exception as e:
         return {"key": "kis", "label": "한국투자증권 API", "ok": False, "ms": round((time.time() - t0) * 1000), "detail": f"{type(e).__name__}: {str(e)[:160]}"}
 

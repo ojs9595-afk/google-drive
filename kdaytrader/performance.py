@@ -9,55 +9,75 @@ from pathlib import Path
 
 from .market import KST
 
-CSV_HEADER = ["진입시각", "청산시각", "코드", "종목", "수량", "진입가", "청산가", "손익", "손익%", "비용", "사유"]
+CSV_HEADER = ["진입시각", "청산시각", "코드", "종목", "수량", "진입가", "청산가", "손익", "손익%", "비용", "사유", "모드"]
+
+
+def cutoff_for(days: int, now: datetime | None = None) -> datetime:
+    now = now or datetime.now(tz=KST)
+    return (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _parse_ts(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
 
 
-def load_trade_files(log_dir: str | Path) -> list[dict]:
+def _read_csv_text(f: Path) -> str:
+    raw = f.read_bytes()
+    for enc in ("utf-8-sig", "cp949", "euc-kr"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def load_trade_files(log_dir: str | Path, include_sim: bool = False) -> list[dict]:
+    """logs/trades_*.csv (실거래·페이퍼) 와, include_sim 이면 sim_trades_*.csv 도 읽는다. 손상된 행/파일은 건너뛴다."""
     out = []
     d = Path(log_dir)
     if not d.exists():
         return out
-    for f in sorted(d.glob("trades_*.csv")):
+    files = sorted(d.glob("trades_*.csv")) + (sorted(d.glob("sim_trades_*.csv")) if include_sim else [])
+    for f in files:
         try:
-            with f.open(encoding="utf-8-sig", newline="") as fh:
-                for r in csv.DictReader(fh):
-                    try:
-                        out.append(
-                            {
-                                "entry_ts": _parse_ts(r["진입시각"]), "exit_ts": _parse_ts(r["청산시각"]), "code": r["코드"], "name": r.get("종목") or r["코드"],
-                                "qty": int(float(r["수량"])), "entry_price": float(r["진입가"]), "exit_price": float(r["청산가"]), "pnl": float(r["손익"]),
-                                "pnl_pct": float(r["손익%"]), "fees": float(r.get("비용") or 0), "reason": r.get("사유", ""), "source": f.name,
-                            }
-                        )
-                    except (KeyError, ValueError):
+            text = _read_csv_text(f)
+            for r in csv.DictReader(io.StringIO(text)):
+                try:
+                    if None in r.values() or r.get("진입시각") is None:
                         continue
-        except OSError:
+                    out.append(
+                        {
+                            "entry_ts": _parse_ts(r["진입시각"]), "exit_ts": _parse_ts(r["청산시각"]), "code": r["코드"], "name": r.get("종목") or r["코드"],
+                            "qty": int(float(r["수량"])), "entry_price": float(r["진입가"]), "exit_price": float(r["청산가"]), "pnl": float(r["손익"]),
+                            "pnl_pct": float(r["손익%"]), "fees": float(r.get("비용") or 0), "reason": r.get("사유") or "", "source": f.name, "mode": r.get("모드") or "",
+                        }
+                    )
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    continue
+        except (OSError, csv.Error):
             continue
     return out
 
 
-def trades_from_broker(trades, names: dict[str, str] | None = None) -> list[dict]:
+def trades_from_broker(trades, names: dict[str, str] | None = None, feed: str = "", mode: str = "") -> list[dict]:
     names = names or {}
     return [
         {
             "entry_ts": t.entry_ts, "exit_ts": t.exit_ts, "code": t.code, "name": t.name or names.get(t.code) or t.code, "qty": t.qty,
-            "entry_price": t.entry_price, "exit_price": t.exit_price, "pnl": t.pnl, "pnl_pct": t.pnl_pct, "fees": t.fees, "reason": t.reason, "source": "session",
+            "entry_price": t.entry_price, "exit_price": t.exit_price, "pnl": t.pnl, "pnl_pct": t.pnl_pct, "fees": t.fees, "reason": t.reason or "", "source": "session",
+            "mode": f"{feed}/{mode}" if feed else "",
         }
         for t in trades
     ]
 
 
 def merge_trades(*lists: list[dict]) -> list[dict]:
-    """중복(같은 코드·진입·청산 시각·수량) 제거 후 청산 시각 순 정렬."""
+    """중복(같은 코드·진입·청산 시각·수량·가격·손익·사유) 제거 후 청산 시각 순 정렬."""
     seen = set()
     out = []
     for lst in lists:
         for t in lst:
-            key = (t["code"], t["entry_ts"].strftime("%Y%m%d%H%M%S"), t["exit_ts"].strftime("%Y%m%d%H%M%S"), t["qty"], round(t["exit_price"]))
+            key = (t["code"], t["entry_ts"].strftime("%Y%m%d%H%M%S"), t["exit_ts"].strftime("%Y%m%d%H%M%S"), t["qty"], round(t["exit_price"]), round(t["pnl"]), t.get("reason", ""))
             if key in seen:
                 continue
             seen.add(key)
@@ -82,8 +102,9 @@ def _streaks(pnls: list[float]) -> tuple[int, int, int]:
 
 def performance_report(trades: list[dict], days: int | None = None, initial_cash: float = 10_000_000, now: datetime | None = None) -> dict:
     now = now or datetime.now(tz=KST)
+    initial_cash = float(initial_cash) if initial_cash and initial_cash > 0 else 0.0
     if days:
-        cutoff = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff = cutoff_for(days, now)
         trades = [t for t in trades if t["exit_ts"] >= cutoff]
     pnls = [t["pnl"] for t in trades]
     wins = [p for p in pnls if p > 0]
@@ -115,7 +136,7 @@ def performance_report(trades: list[dict], days: int | None = None, initial_cash
         else:
             cur_dd_days = 0
         max_dd = min(max_dd, dd)
-        daily_rows.append({"date": day, "pnl": round(d["pnl"]), "trades": d["trades"], "win_rate": round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0, "cum": round(cum), "fees": round(d["fees"]), "ret_pct": round(d["pnl"] / initial_cash * 100, 3)})
+        daily_rows.append({"date": day, "pnl": round(d["pnl"]), "trades": d["trades"], "win_rate": round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0, "cum": round(cum), "fees": round(d["fees"]), "ret_pct": round(d["pnl"] / initial_cash * 100, 3) if initial_cash else 0.0})
     # 월별 / 주별
     monthly = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0, "days": set()})
     weekly = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0})
@@ -130,7 +151,7 @@ def performance_report(trades: list[dict], days: int | None = None, initial_cash
         w["pnl"] += t["pnl"]
         w["trades"] += 1
         w["wins"] += 1 if t["pnl"] > 0 else 0
-    monthly_rows = [{"month": k, "pnl": round(v["pnl"]), "trades": v["trades"], "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0, "days": len(v["days"]), "ret_pct": round(v["pnl"] / initial_cash * 100, 2)} for k, v in sorted(monthly.items())]
+    monthly_rows = [{"month": k, "pnl": round(v["pnl"]), "trades": v["trades"], "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0, "days": len(v["days"]), "ret_pct": round(v["pnl"] / initial_cash * 100, 2) if initial_cash else 0.0} for k, v in sorted(monthly.items())]
     weekly_rows = [{"week": k, "pnl": round(v["pnl"]), "trades": v["trades"], "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0} for k, v in sorted(weekly.items())]
     # 종목별 / 사유별 / 시간대별
     def group(keyfn, label):
@@ -176,5 +197,5 @@ def trades_to_csv(trades: list[dict]) -> str:
     w = csv.writer(buf)
     w.writerow(CSV_HEADER)
     for t in trades:
-        w.writerow([t["entry_ts"].strftime("%Y-%m-%d %H:%M:%S"), t["exit_ts"].strftime("%Y-%m-%d %H:%M:%S"), t["code"], t["name"], t["qty"], t["entry_price"], t["exit_price"], round(t["pnl"]), round(t["pnl_pct"], 3), round(t["fees"]), t["reason"]])
+        w.writerow([t["entry_ts"].strftime("%Y-%m-%d %H:%M:%S"), t["exit_ts"].strftime("%Y-%m-%d %H:%M:%S"), t["code"], t["name"], t["qty"], t["entry_price"], t["exit_price"], round(t["pnl"]), round(t["pnl_pct"], 3), round(t["fees"]), t["reason"], t.get("mode", "")])
     return buf.getvalue()

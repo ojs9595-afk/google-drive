@@ -95,9 +95,13 @@ def resolve_watchlist(cfg: dict, codes: str | None = None, kis_client=None, use_
     if codes:
         wl = {}
         for c in str(codes).split(","):
-            c = c.strip().zfill(6)
-            if c:
-                wl[c] = base.get(c, "")
+            c = c.strip()
+            if not c:
+                continue
+            if not c.isdigit() or len(c) > 6:
+                raise ConfigError(f"종목코드는 숫자 6자리여야 합니다: {c!r}")
+            c = c.zfill(6)
+            wl[c] = base.get(c, "")
         return wl
     sc = cfg.get("screener") or {}
     if use_screener if use_screener is not None else sc.get("enabled"):

@@ -346,15 +346,19 @@ class TradingEngine:
         if len(trades) <= self._trades_written:
             return
         try:
+            from .performance import CSV_HEADER
+
             self.log_dir.mkdir(parents=True, exist_ok=True)
-            path = self.log_dir / f"trades_{(self._last_ts or now_kst()):%Y%m%d}.csv"
-            new_file = not path.exists()
+            # 시뮬레이션 거래는 별도 파일(sim_trades_*)에 기록해 실제 수익률과 섞이지 않게 한다
+            prefix = "sim_trades" if self.feed.name == "sim" else "trades"
+            path = self.log_dir / f"{prefix}_{(self._last_ts or now_kst()):%Y%m%d}.csv"
+            new_file = not path.exists() or path.stat().st_size == 0
             with path.open("a", newline="", encoding="utf-8-sig") as f:
                 w = csv.writer(f)
                 if new_file:
-                    w.writerow(["진입시각", "청산시각", "코드", "종목", "수량", "진입가", "청산가", "손익", "손익%", "비용", "사유"])
+                    w.writerow(CSV_HEADER)
                 for t in trades[self._trades_written:]:
-                    w.writerow([t.entry_ts.strftime("%Y-%m-%d %H:%M:%S"), t.exit_ts.strftime("%Y-%m-%d %H:%M:%S"), t.code, t.name or self.trader.name(t.code), t.qty, t.entry_price, t.exit_price, round(t.pnl), round(t.pnl_pct, 3), round(t.fees), t.reason])
+                    w.writerow([t.entry_ts.strftime("%Y-%m-%d %H:%M:%S"), t.exit_ts.strftime("%Y-%m-%d %H:%M:%S"), t.code, t.name or self.trader.name(t.code), t.qty, t.entry_price, t.exit_price, round(t.pnl), round(t.pnl_pct, 3), round(t.fees), t.reason, f"{self.feed.name}/{self.mode}"])
             self._trades_written = len(trades)
         except Exception as e:  # pragma: no cover
             log.debug("거래 CSV 기록 실패: %s", e)
@@ -369,6 +373,8 @@ class TradingEngine:
         fut: concurrent.futures.Future = concurrent.futures.Future()
 
         def _call():
+            if not fut.set_running_or_notify_cancel():
+                return  # 호출자가 타임아웃으로 취소한 요청은 실행하지 않는다
             try:
                 fut.set_result(fn())
             except BaseException as e:  # noqa: BLE001
@@ -378,6 +384,7 @@ class TradingEngine:
         try:
             return fut.result(timeout)
         except concurrent.futures.TimeoutError:
+            fut.cancel()
             raise RuntimeError("엔진이 응답하지 않습니다. 잠시 후 다시 시도하세요.")
 
     def request_stop(self) -> None:
@@ -407,7 +414,13 @@ class TradingEngine:
     # ----- 실행 -----
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
-        self._stop_requested = False
+        # 웹 대시보드는 워밍업 전에 띄운다 (브라우저가 바로 열려도 페이지가 응답하도록)
+        if self.web is not None:
+            try:
+                self.web.start()
+                self.dashboard.status = f"초기화 중 · 웹 {self.web.url}"
+            except OSError as e:
+                log.warning("웹 대시보드 시작 실패: %s", e)
         try:
             self.warmup()
         except Exception as e:
@@ -415,19 +428,25 @@ class TradingEngine:
             log.exception("엔진 초기화 실패")
             self.dashboard.status = "초기화 실패"
             self._loop = None
+            if self.web is not None:
+                self.web.stop()
             raise
+        if self._stop_requested:  # 워밍업 중 정지 요청
+            self.dashboard.status = "종료"
+            self._loop = None
+            if self.web is not None:
+                self.web.stop()
+            return
         self.feed.on_tick(self.on_tick)
         self.dashboard.status = "실시간 수신 중"
         tasks = [asyncio.create_task(self.feed.run(), name="feed")]
         self._feed_task = tasks[0]
+        if self._stop_requested:
+            tasks[0].cancel()
         for c in self.collectors:
             tasks.append(asyncio.create_task(c.run(), name=type(c).__name__))
-        if self.web is not None:
-            try:
-                self.web.start()
-                self.dashboard.status = f"실시간 수신 중 · 웹 {self.web.url}"
-            except OSError as e:
-                log.warning("웹 대시보드 시작 실패: %s", e)
+        if self.web is not None and self.web._server is not None:
+            self.dashboard.status = f"실시간 수신 중 · 웹 {self.web.url}"
         if self.use_dashboard:
             self._live = Live(self.dashboard.render(), refresh_per_second=4, screen=False)
             self._live.start()

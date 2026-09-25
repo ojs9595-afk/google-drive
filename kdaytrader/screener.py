@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import logging
+import re
 
 log = logging.getLogger(__name__)
+
+# ETF/ETN/레버리지 등 데이트레이딩 유니버스에서 제외할 상품명 패턴
+_ETF_RE = re.compile(r"(KODEX|TIGER|KBSTAR|ARIRANG|HANARO|SOL |ACE |KOSEF|TIMEFOLIO|PLUS |RISE |1Q |ETN|레버리지|인버스|선물|채권|WOORI|삼성 ?ETN|미래에셋 ?ETN)", re.I)
+
+
+def is_fund_like(name: str) -> bool:
+    return bool(name) and bool(_ETF_RE.search(name))
 
 
 def screen(
@@ -26,10 +34,8 @@ def screen(
             log.warning("KIS 거래량 순위 조회 실패: %s", e)
             rows = []
         for r in rows:
-            if r["code"] in exclude or abs(r["change_pct"]) > max_abs_change:
+            if r["code"] in exclude or abs(r["change_pct"]) > max_abs_change or is_fund_like(r["name"]):
                 continue
-            if r["code"].startswith(("5", "6", "7")) and len(r["code"]) == 6 and r["code"][0] in "567":
-                continue  # ETF/ETN 대략 제외
             out[r["code"]] = r["name"]
             if len(out) >= limit:
                 break
@@ -45,9 +51,11 @@ def screen(
             log.warning("네이버 거래량 상위 조회 실패(%s): %s", m, e)
             continue
         for code, name in cands:
-            if code in exclude or code in out:
+            if code in exclude or code in out or is_fund_like(name):
                 continue
             tick = feed.fetch_quote(code)
+            if tick is not None and is_fund_like(tick.name):
+                continue
             if tick is None or not (min_price <= tick.price <= max_price) or abs(tick.change_pct) > max_abs_change:
                 continue
             out[code] = name or tick.name

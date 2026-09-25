@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 import yaml
 
 from . import __version__
-from .config import DEFAULTS, _merge, load_config
+from .config import DEFAULTS, _merge, _normalize_watchlist, load_config, validate_config, yaml_dump, yaml_load
 from .factory import ConfigError, build_engine, make_feed_and_broker, resolve_watchlist
 from .indicators import compute_all
 from .market import KST, is_market_open, now_kst, seconds_until_open
@@ -73,6 +73,7 @@ class BacktestJob:
         self.result: dict | None = None
         self.error = ""
         self.started_at: float = 0.0
+        self.finished_at: float = 0.0
         self._thread: threading.Thread | None = None
 
     def start(self, fn) -> None:
@@ -80,6 +81,7 @@ class BacktestJob:
             raise RuntimeError("백테스트가 이미 실행 중입니다.")
         self.status, self.error, self.result, self.progress = "running", "", None, "데이터 준비 중"
         self.started_at = time.time()
+        self.finished_at = 0.0
 
         def run():
             try:
@@ -89,12 +91,15 @@ class BacktestJob:
                 self.error = f"{type(e).__name__}: {e}"
                 self.status = "error"
                 log.exception("백테스트 실패")
+            finally:
+                self.finished_at = time.time()
 
         self._thread = threading.Thread(target=run, daemon=True, name="backtest")
         self._thread.start()
 
     def to_dict(self) -> dict:
-        return {"status": self.status, "progress": self.progress, "error": self.error, "elapsed": round(time.time() - self.started_at, 1) if self.started_at else 0, "result": self.result}
+        end = self.finished_at or time.time()
+        return {"status": self.status, "progress": self.progress, "error": self.error, "elapsed": round(end - self.started_at, 1) if self.started_at else 0, "result": self.result}
 
 
 class AppController:
@@ -137,6 +142,7 @@ class AppController:
             "config_path": str(self.config_path.resolve()),
             "config_exists": self.config_path.exists(),
             "kis_configured": bool((self.cfg.get("kis") or {}).get("app_key")) and bool((self.cfg.get("kis") or {}).get("app_secret")),
+            "config_error": self.cfg.get("_config_error", ""),
             "watchlist_count": len(self.cfg.get("watchlist") or {}),
             "backtest": self.backtest.status,
         }
@@ -152,6 +158,7 @@ class AppController:
                 cfg["sim"] = {**(cfg.get("sim") or {}), "speed": float(sim_speed)}
             self.error = ""
             engine = build_engine(cfg, feed, mode, codes=codes, auto_trade=(False if signal_only else None), use_dashboard=False, use_news=use_news)
+            engine._stop_requested = False  # 시작 직전에만 초기화 (워밍업 중 정지 요청이 무시되지 않도록)
             self.engine = engine
             self.run_opts = {"feed": engine.feed.name, "mode": engine.mode, "signal_only": signal_only, "codes": list(engine.watchlist.keys()), "news": use_news}
             self.started_at = time.time()
@@ -213,22 +220,22 @@ class AppController:
         code = code.zfill(6)
         if code not in eng.store.codes():
             raise RuntimeError(f"{code} 는 관심종목에 없습니다.")
+        cols = ["open", "high", "low", "close", "volume", "ema_fast", "ema_slow", "vwap", "bb_upper", "bb_lower", "rsi", "macd_hist", "st_line", "st_dir"]
         df = eng.store.df(code, include_current=True, n=max(n, 120))
         if df.empty:
-            return {"code": code, "bars": []}
+            return {"code": code, "name": eng.trader.name(code), "bars": {"t": [], "date": [], **{c: [] for c in cols}}, "markers": [], "position": None, "signal": None}
         try:
             ind = compute_all(df, eng.trader._ind_params)
         except Exception:
             ind = df
         ind = ind.iloc[-n:]
-        cols = ["open", "high", "low", "close", "volume", "ema_fast", "ema_slow", "vwap", "bb_upper", "bb_lower", "rsi", "macd_hist", "st_line", "st_dir"]
-        bars = {"t": [ts.strftime("%H:%M") for ts in ind.index], "date": [ts.strftime("%m-%d") for ts in ind.index]}
+        bars = {"t": [ts.strftime("%H:%M") for ts in ind.index], "date": [ts.strftime("%m-%d") for ts in ind.index], "key": [ts.strftime("%m-%d %H:%M") for ts in ind.index]}
         for c in cols:
             bars[c] = _clean(ind[c].tolist()) if c in ind.columns else [None] * len(ind)
         first_ts = ind.index[0].to_pydatetime()
         markers = [
-            {"t": e.ts.strftime("%H:%M"), "side": e.side, "price": e.price, "qty": e.qty, "reason": e.reason}
-            for e in eng.trader.state.events if e.code == code and e.ts >= first_ts
+            {"t": e.ts.strftime("%H:%M"), "key": e.ts.strftime("%m-%d %H:%M"), "side": e.side, "price": e.price, "qty": e.qty, "reason": e.reason}
+            for e in list(eng.trader.state.events) if e.code == code and e.ts >= first_ts
         ]
         pos = eng.broker.position(code)
         position = {"avg_price": pos.avg_price, "stop": pos.stop_price, "take_profit": pos.take_profit, "qty": pos.qty} if pos else None
@@ -240,7 +247,9 @@ class AppController:
         raw = {}
         if self.config_path.exists():
             try:
-                raw = yaml.safe_load(self.config_path.read_text(encoding="utf-8")) or {}
+                raw = yaml_load(self.config_path.read_text(encoding="utf-8")) or {}
+                if not isinstance(raw, dict):
+                    raw = {}
             except Exception as e:
                 log.warning("config.yaml 파싱 실패: %s", e)
         return raw
@@ -248,19 +257,22 @@ class AppController:
     def config_get(self) -> dict:
         raw = self._raw_config()
         merged = _merge({k: v for k, v in DEFAULTS.items() if k in EDITABLE_SECTIONS}, raw)
-        # 환경변수 플레이스홀더는 비워서 보여준다
-        for k in ("app_key", "app_secret", "account"):
-            v = (merged.get("kis") or {}).get(k, "")
-            if isinstance(v, str) and v.startswith("${"):
-                merged["kis"][k] = ""
-        for k in ("token", "chat_id"):
-            v = (merged.get("telegram") or {}).get(k, "")
-            if isinstance(v, str) and v.startswith("${"):
-                merged["telegram"][k] = ""
-        wl = merged.get("watchlist") or {}
-        if isinstance(wl, list):
-            wl = {str(c): "" for c in wl}
-        merged["watchlist"] = {str(k).zfill(6): (v or "") for k, v in wl.items()}
+        for k, v in DEFAULTS.items():
+            if k in EDITABLE_SECTIONS and isinstance(v, dict) and not isinstance(merged.get(k), dict):
+                merged[k] = dict(v)
+        # 환경변수 플레이스홀더는 비워서 보여주되, 어떤 키가 환경변수를 쓰는지 표시한다
+        env_keys = {}
+        for sec, keys in SECRET_KEYS.items():
+            for k in keys:
+                v = (merged.get(sec) or {}).get(k, "")
+                if isinstance(v, str) and v.startswith("${"):
+                    merged[sec][k] = ""
+                    env_keys[f"{sec}.{k}"] = v
+        merged["_env"] = env_keys
+        try:
+            merged["watchlist"] = _normalize_watchlist(merged.get("watchlist"))
+        except ValueError:
+            merged["watchlist"] = {}
         merged["_schema"] = {
             "strategy": {f.name: f.default for f in fields(StrategyParams) if not isinstance(f.default, tuple)},
             "risk": {f.name: (f.default.strftime("%H:%M") if hasattr(f.default, "strftime") else f.default) for f in fields(RiskParams)},
@@ -272,19 +284,24 @@ class AppController:
         for k in EDITABLE_SECTIONS:
             if k in data:
                 raw[k] = data[k]
-        wl = raw.get("watchlist") or {}
-        if isinstance(wl, list):
-            wl = {str(c): "" for c in wl}
-        raw["watchlist"] = {str(k).zfill(6): (v or "") for k, v in wl.items() if str(k).strip()}
+        # 환경변수 플레이스홀더로 관리하던 비밀값은, 화면에서 빈 값으로 오면 플레이스홀더를 유지한다
+        for sec, keys in SECRET_KEYS.items():
+            old_sec = self._raw_config().get(sec) or {}
+            for k in keys:
+                old = old_sec.get(k)
+                new = (raw.get(sec) or {}).get(k)
+                if isinstance(old, str) and old.startswith("${") and (new is None or new == ""):
+                    raw.setdefault(sec, {})[k] = old
+        raw["watchlist"] = _normalize_watchlist(raw.get("watchlist"))
         # 숫자형 정리
         for sec in ("strategy", "risk", "quant", "context"):
             if isinstance(raw.get(sec), dict):
                 raw[sec] = {k: v for k, v in raw[sec].items() if v not in ("", None)}
         try:
             load_config_from_dict(raw)  # 검증
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             raise RuntimeError(f"설정 값 오류: {e}")
-        self.config_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        self.config_path.write_text(yaml_dump(raw), encoding="utf-8")
         self.cfg = load_config(str(self.config_path))
         return self.config_get()
 
@@ -396,31 +413,44 @@ class AppController:
             raise RuntimeError("종목을 찾지 못했습니다.")
         return {"code": code.zfill(6), "name": t.name, "price": t.price, "change_pct": t.change_pct}
 
-    def performance(self, days: int | None = 90) -> dict:
-        from .performance import load_trade_files, merge_trades, performance_report, trades_from_broker
+    def _all_trades(self, include_sim: bool) -> list[dict]:
+        from .performance import load_trade_files, merge_trades, trades_from_broker
+
+        files = load_trade_files(self.cfg.get("log_dir", "logs"), include_sim=include_sim)
+        session = []
+        eng = self.engine
+        if eng is not None and (include_sim or eng.feed.name != "sim"):
+            try:
+                session = trades_from_broker(list(eng.broker.trades()), eng.watchlist, feed=eng.feed.name, mode=eng.mode)
+            except RuntimeError:
+                session = []
+        return merge_trades(files, session)
+
+    def performance(self, days: int | None = 90, include_sim: bool = False) -> dict:
+        from .performance import performance_report
 
         cfg = self.cfg
-        files = load_trade_files(cfg.get("log_dir", "logs"))
-        session = trades_from_broker(self.engine.broker.trades(), self.engine.watchlist) if self.engine is not None else []
-        trades = merge_trades(files, session)
+        trades = self._all_trades(include_sim)
         rep = performance_report(trades, days or None, float(cfg.get("initial_cash", 10_000_000)))
         rep["open_positions"] = []
-        if self.engine is not None:
-            prices = self.engine.store.last_price
-            rep["open_positions"] = [{"code": c, "name": self.engine.trader.name(c), "qty": p.qty, "avg_price": p.avg_price, "price": prices.get(c, p.avg_price), "pnl": p.unrealized(prices.get(c, p.avg_price))} for c, p in self.engine.broker.positions().items()]
+        eng = self.engine
+        if eng is not None and (include_sim or eng.feed.name != "sim"):
+            prices = eng.store.last_price
+            try:
+                items = list(eng.broker.positions().items())
+            except RuntimeError:
+                items = []
+            rep["open_positions"] = [{"code": c, "name": eng.trader.name(c), "qty": p.qty, "avg_price": p.avg_price, "price": prices.get(c, p.avg_price), "pnl": p.unrealized(prices.get(c, p.avg_price))} for c, p in items]
         rep["sources"] = sorted({t["source"] for t in trades})
+        rep["include_sim"] = include_sim
         return rep
 
-    def performance_csv(self, days: int | None = None) -> str:
-        from .performance import load_trade_files, merge_trades, trades_from_broker, trades_to_csv
+    def performance_csv(self, days: int | None = None, include_sim: bool = False) -> str:
+        from .performance import cutoff_for, trades_to_csv
 
-        files = load_trade_files(self.cfg.get("log_dir", "logs"))
-        session = trades_from_broker(self.engine.broker.trades(), self.engine.watchlist) if self.engine is not None else []
-        trades = merge_trades(files, session)
+        trades = self._all_trades(include_sim)
         if days:
-            from datetime import timedelta
-
-            cutoff = now_kst() - timedelta(days=days)
+            cutoff = cutoff_for(days)
             trades = [t for t in trades if t["exit_ts"] >= cutoff]
         return trades_to_csv(trades)
 
@@ -431,23 +461,20 @@ class AppController:
         return run_diagnostics(self.cfg)
 
     def logs(self, since: int = 0) -> dict:
-        recs = [r for r in self.loghandler.records if r["id"] > since]
+        recs = [r for r in list(self.loghandler.records) if r["id"] > since]  # list(deque) 는 원자적
         return {"records": recs[-300:], "last_id": self.loghandler._seq}
 
 
+SECRET_KEYS = {"kis": ("app_key", "app_secret", "account"), "telegram": ("token", "chat_id")}
+
+
 def load_config_from_dict(raw: dict) -> dict:
-    """저장 전 검증용: 파라미터 dataclass 생성이 되는지 확인."""
-    from .config import build_pairs, build_quant_params, build_risk_params, build_rules, build_strategy_params
+    """저장 전 검증용: 파라미터 dataclass 생성과 범위 검증."""
     from .config import _expand
 
     cfg = _expand(_merge(DEFAULTS, raw))
-    build_strategy_params(cfg)
-    build_risk_params(cfg)
-    build_quant_params(cfg)
-    build_pairs(cfg)
-    build_rules(cfg)
-    float(cfg.get("initial_cash", 0))
-    int(cfg.get("interval_min", 1))
+    cfg["watchlist"] = _normalize_watchlist(cfg.get("watchlist"))
+    validate_config(cfg)
     return cfg
 
 
@@ -538,9 +565,9 @@ class AppServer:
                     if u.path == "/api/diagnose":
                         return self._json(ctl.diagnose())
                     if u.path == "/api/performance":
-                        return self._json(ctl.performance(int(q.get("days", 90)) or None))
+                        return self._json(ctl.performance(int(q.get("days", 90)) or None, q.get("sim") == "1"))
                     if u.path == "/api/performance.csv":
-                        body = ctl.performance_csv(int(q.get("days", 0)) or None).encode("utf-8-sig")
+                        body = ctl.performance_csv(int(q.get("days", 0)) or None, q.get("sim") == "1").encode("utf-8-sig")
                         self.send_response(200)
                         self.send_header("Content-Type", "text/csv; charset=utf-8")
                         self.send_header("Content-Disposition", "attachment; filename=trades.csv")
@@ -605,14 +632,18 @@ class AppServer:
             pass
         if self._server is not None:
             self._server.shutdown()
+            self._server.server_close()
             self._server = None
 
 
 def find_free_port(host: str, preferred: int) -> int:
+    import os
     import socket
 
     for port in [preferred] + list(range(preferred + 1, preferred + 20)):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if os.name != "nt":
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # TIME_WAIT 소켓 때문에 포트가 바뀌지 않도록
             try:
                 s.bind((host, port))
                 return port

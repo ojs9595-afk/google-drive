@@ -143,6 +143,8 @@ class NaverFeed(DataFeed):
     # ----- 폴링 루프 -----
     async def run(self) -> None:
         self._running = True
+        if getattr(self._pool, "_shutdown", False):
+            self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="naver")
         loop = asyncio.get_running_loop()
         last_key: dict[str, tuple] = {}
         last_emit: dict[str, datetime] = {}
@@ -177,6 +179,10 @@ class NaverFeed(DataFeed):
 
     def stop(self) -> None:
         super().stop()
+        try:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
 
 _ITEM_RE = re.compile(r'<item data="([^"]+)"')

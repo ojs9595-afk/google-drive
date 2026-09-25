@@ -65,6 +65,7 @@ async function pollStatus() {
     const al = $('homeAlert');
     if (status.last_error && !status.running) { al.style.display = ''; al.textContent = '마지막 오류: ' + status.last_error; } else al.style.display = 'none';
     $('sysinfo').textContent = `설정 파일: ${status.config_path} · 관심종목 ${status.watchlist_count}개`;
+    const ca = $('cfgAlert'); if (status.config_error) { ca.style.display = ''; ca.textContent = '⚠ ' + status.config_error + ' — 기본 설정으로 실행 중입니다. 설정 탭에서 저장하면 파일이 다시 만들어집니다.'; } else ca.style.display = 'none';
     $('dashStatus').textContent = status.running ? status.engine_status : '엔진이 실행 중이 아닙니다. 홈에서 시작하세요.';
   } catch (e) { $('engineText').textContent = '서버 연결 끊김'; $('enginePill').className = 'engine-pill err'; }
 }
@@ -96,7 +97,7 @@ async function startKis() {
   const go = () => startEngine({ feed: 'kis', mode: 'live', news: true });
   if (paper) go(); else openModal('실계좌 주문 확인', '실계좌로 실제 주문이 전송됩니다. 손실이 발생할 수 있습니다.\n계속할까요?', go);
 }
-async function stopEngine() { try { await api('/api/stop', {}); toast('엔진을 정지했습니다.'); state = {}; pollStatus(); } catch (e) { toast(e.message, 'err'); } }
+async function stopEngine() { try { await api('/api/stop', {}); toast('엔진을 정지했습니다.'); state = {}; chartData = null; const sel = $('chartCode'); sel.innerHTML = ''; sel.dataset.codes = ''; pollStatus(); } catch (e) { toast(e.message, 'err'); } }
 async function toggleAuto() { try { const r = await api('/api/toggle_auto', {}); toast('자동매매 ' + (r.auto_trade ? 'ON' : 'OFF')); pollState(); } catch (e) { toast(e.message, 'err'); } }
 function closeAll() { openModal('전량 청산', '보유 중인 모든 포지션을 현재가로 청산합니다.', async () => { try { const r = await api('/api/close_all', {}); toast(`${r.closed}개 포지션 청산 요청`, 'ok'); } catch (e) { toast(e.message, 'err'); } }); }
 
@@ -167,15 +168,15 @@ function renderReco() {
 /* ---------------- 수익률 관리 ---------------- */
 let perfData = null;
 async function loadPerf() {
-  const days = $('perfDays').value;
+  const days = $('perfDays').value, sim = $('perfSource').value;
   $('perfMeta').textContent = '불러오는 중…';
-  $('perfCsv').href = '/api/performance.csv?days=' + days;
-  try { perfData = await api('/api/performance?days=' + days); renderPerf(perfData); }
+  $('perfCsv').href = `/api/performance.csv?days=${days}&sim=${sim}`;
+  try { perfData = await api(`/api/performance?days=${days}&sim=${sim}`); renderPerf(perfData); }
   catch (e) { $('perfMeta').textContent = e.message; }
 }
 function renderPerf(r) {
   const k = r.kpi;
-  $('perfMeta').textContent = `${k.trading_days}거래일 · ${k.trades}건 · 출처: ${r.sources.length ? r.sources.join(', ') : '거래 기록 없음'}`;
+  $('perfMeta').textContent = `${k.trading_days}거래일 · ${k.trades}건 · 출처: ${r.sources.length ? r.sources.join(', ') : '거래 기록 없음'}` + (r.include_sim ? '' : ' · 시뮬레이션 거래는 제외됨');
   const tiles = [['누적 손익', signed(k.total_pnl) + '원', cls(k.total_pnl)], ['수익률(초기자금 대비)', (k.return_pct >= 0 ? '+' : '') + k.return_pct + '%', cls(k.return_pct)], ['거래 수', k.trades, ''], ['승률', k.win_rate + '%', k.win_rate >= 50 ? 'up' : 'down'], ['손익비(PF)', k.profit_factor == null ? '-' : k.profit_factor, k.profit_factor >= 1 ? 'up' : 'down'], ['기대손익/거래', signed(k.expectancy), cls(k.expectancy)], ['평균 수익', signed(k.avg_win), 'up'], ['평균 손실', signed(k.avg_loss), 'down'], ['최대 낙폭(누적손익)', signed(k.max_drawdown), 'down'], ['낙폭 지속(일)', k.dd_days, ''], ['최대 연승 / 연패', `${k.best_streak} / ${k.worst_streak}`, ''], ['현재 연속', k.current_streak > 0 ? `${k.current_streak}연승` : k.current_streak < 0 ? `${-k.current_streak}연패` : '-', cls(k.current_streak)], ['일평균 손익', signed(k.pnl_per_day), cls(k.pnl_per_day)], ['수익 거래일', `${k.profitable_days}/${k.trading_days}`, ''], ['평균 보유(분)', k.avg_holding_min, ''], ['총 비용(수수료·세금)', fmtWon(k.fees), '']];
   $('perfKpi').innerHTML = tiles.map(([l, v, c]) => `<div class="metric"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`).join('');
   drawBars($('perfDaily'), r.daily.map(d => d.pnl), r.daily.map(d => d.date.slice(5)));
@@ -222,8 +223,12 @@ let chartData = null, chartTimer = null, hoverIdx = -1;
 async function loadChart(force) {
   if (!status.running && !force) return;
   const sel = $('chartCode');
-  if (state.watchlist && sel.options.length !== state.watchlist.length) {
-    const cur = sel.value; sel.innerHTML = state.watchlist.map(r => `<option value="${r.code}">${esc(r.name)} (${r.code})</option>`).join(''); if (cur) sel.value = cur;
+  if (state.watchlist) {
+    const codes = state.watchlist.map(r => r.code).join(',');
+    if (sel.dataset.codes !== codes) {
+      const cur = sel.value; sel.innerHTML = state.watchlist.map(r => `<option value="${r.code}">${esc(r.name)} (${r.code})</option>`).join(''); sel.dataset.codes = codes;
+      if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+    }
   }
   if (!sel.value) { drawEmpty($('mainChart'), '엔진을 시작하면 차트가 표시됩니다.'); return; }
   try { chartData = await api(`/api/chart?code=${sel.value}&n=${$('chartN').value}`); renderChart(); }
@@ -231,7 +236,7 @@ async function loadChart(force) {
 }
 function drawEmpty(c, msg) { const { ctx, w, h } = setupCanvas(c); ctx.clearRect(0, 0, w, h); ctx.fillStyle = css('--muted'); ctx.font = '14px Noto Sans KR'; ctx.textAlign = 'center'; ctx.fillText(msg, w / 2, h / 2); ctx.textAlign = 'left'; }
 function renderChart() {
-  const d = chartData; const c = $('mainChart'); if (!d || !d.bars || !d.bars.t.length) { drawEmpty(c, '데이터 없음'); return; }
+  const d = chartData; const c = $('mainChart'); if (!d || !d.bars || !Array.isArray(d.bars.t) || !d.bars.t.length || !Array.isArray(d.bars.close)) { drawEmpty(c, '데이터 없음 (캔들이 쌓이면 표시됩니다)'); return; }
   const b = d.bars, n = b.t.length, { ctx, w, h } = setupCanvas(c); ctx.clearRect(0, 0, w, h);
   const L = 8, R = 64, top = 10, panes = [{ y0: top, y1: h * 0.58 }, { y0: h * 0.60, y1: h * 0.70 }, { y0: h * 0.72, y1: h * 0.85 }, { y0: h * 0.87, y1: h - 18 }];
   const X = i => L + (i + 0.5) * (w - L - R) / n, bw = Math.max(1.5, (w - L - R) / n * 0.65);
@@ -253,8 +258,8 @@ function renderChart() {
   if (ov.st) { ctx.lineWidth = 1.5; for (let i = 1; i < n; i++) { if (b.st_line[i] == null || b.st_line[i - 1] == null) continue; ctx.strokeStyle = b.st_dir[i] > 0 ? up : down; ctx.beginPath(); ctx.moveTo(X(i - 1), Y(b.st_line[i - 1])); ctx.lineTo(X(i), Y(b.st_line[i])); ctx.stroke(); } }
   if (d.position) { const hline = (v, color, label) => { const y = Y(v); ctx.setLineDash([6, 4]); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(w - R, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = color; ctx.font = 'bold 10px JetBrains Mono'; ctx.fillText(label + ' ' + Math.round(v).toLocaleString(), L + 4, y - 3); }; hline(d.position.avg_price, '#f59e0b', '평단'); hline(d.position.stop, down, '손절'); hline(d.position.take_profit, up, '익절'); }
   // 매매 마커
-  const tIndex = {}; b.t.forEach((t, i) => { tIndex[t] = i; });
-  (d.markers || []).forEach(m => { const i = tIndex[m.t]; if (i == null) return; const y = Y(m.price); ctx.fillStyle = m.side === 'BUY' ? up : down; ctx.beginPath(); if (m.side === 'BUY') { ctx.moveTo(X(i), y + 6); ctx.lineTo(X(i) - 6, y + 16); ctx.lineTo(X(i) + 6, y + 16); } else { ctx.moveTo(X(i), y - 6); ctx.lineTo(X(i) - 6, y - 16); ctx.lineTo(X(i) + 6, y - 16); } ctx.closePath(); ctx.fill(); });
+  const tIndex = {}; b.t.forEach((t, i) => { tIndex[(b.key ? b.key[i] : (b.date[i] + ' ' + t))] = i; });
+  (d.markers || []).forEach(m => { const i = tIndex[m.key || m.t]; if (i == null) return; const y = Y(m.price); ctx.fillStyle = m.side === 'BUY' ? up : down; ctx.beginPath(); if (m.side === 'BUY') { ctx.moveTo(X(i), y + 6); ctx.lineTo(X(i) - 6, y + 16); ctx.lineTo(X(i) + 6, y + 16); } else { ctx.moveTo(X(i), y - 6); ctx.lineTo(X(i) - 6, y - 16); ctx.lineTo(X(i) + 6, y - 16); } ctx.closePath(); ctx.fill(); });
   // 거래량
   const V = panes[1], vmax = Math.max(...b.volume.map(v => v || 0), 1), Yv = Yf(V, 0, vmax); grid(V, 0, vmax, v => (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(0) + 'K' : Math.round(v)));
   for (let i = 0; i < n; i++) { const v = b.volume[i] || 0; ctx.fillStyle = (b.close[i] >= b.open[i] ? up : down) + '99'; ctx.fillRect(X(i) - bw / 2, Yv(v), bw, V.y1 - Yv(v)); }
@@ -267,7 +272,7 @@ function renderChart() {
   for (let i = 0; i < n; i++) { const v = b.macd_hist[i]; if (v == null) continue; ctx.fillStyle = (v >= 0 ? up : down) + 'bb'; const y0 = Ym(0), y1 = Ym(v); ctx.fillRect(X(i) - bw / 2, Math.min(y0, y1), bw, Math.abs(y1 - y0) || 1); }
   ctx.fillStyle = muted; ctx.fillText('MACD 히스토그램', L + 4, M.y0 + 10);
   // 시간축
-  ctx.fillStyle = muted; ctx.font = '10px JetBrains Mono'; const step = Math.max(1, Math.round(n / 8)); for (let i = 0; i < n; i += step) ctx.fillText(b.t[i], X(i) - 14, h - 5);
+  ctx.fillStyle = muted; ctx.font = '10px JetBrains Mono'; const step = Math.max(1, Math.round(n / 8)); for (let i = 0; i < n; i += step) ctx.fillText((i > 0 && b.date[i] !== b.date[i - 1]) || (i === 0 && n > 1 && b.date[0] !== b.date[n - 1]) ? b.date[i] + ' ' + b.t[i] : b.t[i], X(i) - 14, h - 5);
   // 헤더
   ctx.fillStyle = css('--ink'); ctx.font = 'bold 13px Noto Sans KR'; ctx.fillText(`${d.name} (${d.code})  ${b.date[n - 1]}`, L + 4, top + 12);
   ctx.font = '11px Noto Sans KR'; let lx = L + 4, ly = top + 28; const legend = [['#f59e0b', 'EMA9', ov.ema], ['#10b981', 'EMA21', ov.ema], ['#a855f7', 'VWAP', ov.vwap], ['#6366f1', '볼린저', ov.bb]]; legend.forEach(([col, name, on]) => { if (!on) return; ctx.fillStyle = col; ctx.fillRect(lx, ly - 8, 10, 3); ctx.fillStyle = muted; ctx.fillText(name, lx + 13, ly - 3); lx += 60; });
@@ -345,12 +350,15 @@ async function loadConfig() {
   try { cfg = await api('/api/config'); } catch (e) { toast(e.message, 'err'); return; }
   $('cfgPath').textContent = '설정 파일: ' + (status.config_path || 'config.yaml');
   $('fGeneral').innerHTML = field('mode', '기본 모드', cfg.mode, 'select', [['paper', '페이퍼(가상 체결)'], ['live', '한국투자증권 주문']]) + field('feed', '기본 시세 피드', cfg.feed, 'select', [['sim', '시뮬레이션'], ['naver', '네이버 폴링'], ['kis', '한국투자증권 웹소켓']]) + field('initial_cash', '초기 자금(원, 페이퍼)', cfg.initial_cash, 'number') + field('interval_min', '시그널 캔들 주기(분)', cfg.interval_min, 'number') + field('auto_trade', '자동매매', cfg.auto_trade, 'bool') + field('screener.enabled', '거래량 상위 자동 편입', cfg.screener.enabled, 'bool') + field('screener.limit', '스크리너 종목 수', cfg.screener.limit, 'number') + field('sim.speed', '시뮬레이션 배속', cfg.sim.speed, 'number');
-  $('fKis').innerHTML = field('kis.app_key', '앱키 (App Key)', cfg.kis.app_key, 'password') + field('kis.app_secret', '앱 시크릿', cfg.kis.app_secret, 'password') + field('kis.account', '계좌번호 (예: 12345678-01)', cfg.kis.account) + field('kis.paper', '서버', cfg.kis.paper, 'select', [['true', '모의투자 (권장)'], ['false', '실전 (실계좌 주문!)']]);
+  const env = cfg._env || {};
+  const envHint = k => (env[k] ? `<span class="hint">환경변수 ${esc(env[k])} 사용 중 — 비워 두면 그대로 유지됩니다</span>` : '');
+  $('fKis').innerHTML = field('kis.app_key', '앱키 (App Key)', cfg.kis.app_key, 'password') + envHint('kis.app_key') + field('kis.app_secret', '앱 시크릿', cfg.kis.app_secret, 'password') + envHint('kis.app_secret') + field('kis.account', '계좌번호 (예: 12345678-01)', cfg.kis.account) + envHint('kis.account') + field('kis.paper', '서버', cfg.kis.paper, 'select', [['true', '모의투자 (권장)'], ['false', '실전 (실계좌 주문!)']]);
   const sch = cfg._schema || { risk: {}, strategy: {} };
   $('fRisk').innerHTML = Object.keys(RISK_LABELS).map(k => { const v = (cfg.risk || {})[k]; const def = sch.risk[k]; const isBool = typeof def === 'boolean'; const isTime = /^\d{1,2}:\d{2}$/.test(String(def)); return field('risk.' + k, RISK_LABELS[k], v == null ? def : v, isBool ? 'bool' : isTime ? 'text' : 'number'); }).join('');
   $('fStrategy').innerHTML = Object.keys(STRAT_LABELS).map(k => { const v = (cfg.strategy || {})[k]; const def = sch.strategy[k]; const isBool = typeof def === 'boolean'; return field('strategy.' + k, STRAT_LABELS[k], v == null ? def : v, isBool ? 'bool' : 'number'); }).join('');
   $('fQuant').innerHTML = field('quant.enabled', '퀀트 알파 사용', cfg.quant.enabled, 'bool') + field('quant.pairs_entry_z', '페어 진입 z-score', cfg.quant.pairs_entry_z == null ? 2.0 : cfg.quant.pairs_entry_z, 'number') + field('context.enabled', '거시·뉴스 컨텍스트 사용', cfg.context.enabled, 'bool') + field('context.stock_news', '종목별 구글뉴스 검색', cfg.context.stock_news == null ? true : cfg.context.stock_news, 'bool') + field('context.risk_off_index_drop_pct', '코스피 급락 진입 차단(%)', cfg.context.risk_off_index_drop_pct == null ? -1.5 : cfg.context.risk_off_index_drop_pct, 'number') + field('context.stock_news_block', '종목 악재 진입 차단 감성', cfg.context.stock_news_block == null ? -0.45 : cfg.context.stock_news_block, 'number') + field('rules.enabled', '규칙 엔진 사용', cfg.rules.enabled, 'bool') + field('rules.use_defaults', '기본 규칙 포함', cfg.rules.use_defaults, 'bool');
-  $('fMisc').innerHTML = field('telegram.token', '텔레그램 봇 토큰', cfg.telegram.token, 'password') + field('telegram.chat_id', '텔레그램 채팅 ID', cfg.telegram.chat_id) + field('naver.poll_interval', '네이버 폴링 주기(초)', cfg.naver.poll_interval, 'number') + field('log_dir', '로그 폴더', cfg.log_dir);
+  $('fMisc').innerHTML = field('telegram.token', '텔레그램 봇 토큰', cfg.telegram.token, 'password') + envHint('telegram.token') + field('telegram.chat_id', '텔레그램 채팅 ID', cfg.telegram.chat_id) + envHint('telegram.chat_id') + field('naver.poll_interval', '네이버 폴링 주기(초)', cfg.naver.poll_interval, 'number') + field('log_dir', '로그 폴더', cfg.log_dir);
+  const im = document.querySelector('#page-settings [data-k="interval_min"]'); if (im) { im.min = '1'; im.step = '1'; }
   renderWatch();
 }
 function renderWatch() { $('wlEdit').innerHTML = Object.entries(cfg.watchlist).map(([c, n]) => `<span class="wchip"><b>${c}</b> ${esc(n || '')}<button title="삭제" onclick="removeWatch('${c}')">✕</button></span>`).join('') || '<span class="muted">관심종목이 없습니다.</span>'; }
@@ -367,7 +375,7 @@ async function screenAdd() {
   try { const r = await api('/api/screen?source=naver&limit=15'); const n = Object.keys(r.result).length; Object.assign(cfg.watchlist, r.result); renderWatch(); toast(`${n}개 종목을 불러왔습니다. 저장을 누르세요.`, 'ok'); } catch (e) { toast(e.message, 'err'); }
 }
 function collectForm() {
-  const out = JSON.parse(JSON.stringify(cfg)); delete out._schema;
+  const out = JSON.parse(JSON.stringify(cfg)); delete out._schema; delete out._env;
   document.querySelectorAll('#page-settings [data-k]').forEach(el => {
     const path = el.dataset.k.split('.'); let v = el.value;
     if (el.dataset.type === 'bool' || el.tagName === 'SELECT' && (v === 'true' || v === 'false')) v = v === 'true';
