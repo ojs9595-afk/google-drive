@@ -31,3 +31,21 @@ def test_one_click_scripts_exist_and_reference_launcher():
         text = (root / name).read_text(encoding="utf-8")
         assert "launcher.py" in text
     assert (root / "config.example.yaml").exists() and (root / "requirements.txt").exists()
+
+
+def test_windows_scripts_encoding_and_line_endings():
+    root = Path(__file__).resolve().parents[1]
+    bat = (root / "KDayTrader.bat").read_bytes()
+    assert b"\r\n" in bat and b"\n" not in bat.replace(b"\r\n", b"")  # CRLF 만 (LF 전용이면 cmd 라벨 탐색 오류)
+    assert not bat.startswith(b"\xef\xbb\xbf")  # BOM 이 있으면 첫 줄 @echo off 가 깨짐
+    assert b"setup_portable.ps1" in bat and b"runtime\\python" in bat
+    ps1 = (root / "tools" / "setup_portable.ps1").read_bytes()
+    assert ps1.startswith(b"\xef\xbb\xbf")  # PowerShell 5 가 한글을 UTF-8 로 읽도록 BOM 필요
+    assert b"embed" in ps1 and b"get-pip.py" in ps1 and b"import site" in ps1
+
+
+def test_market_timezone_fallback_is_kst():
+    from datetime import timedelta
+    from kdaytrader.market import KST, now_kst
+
+    assert now_kst().utcoffset() == timedelta(hours=9) and KST is not None

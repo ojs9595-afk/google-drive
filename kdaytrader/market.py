@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, time, timedelta, timezone
 
-KST = ZoneInfo("Asia/Seoul")
+try:
+    from zoneinfo import ZoneInfo
+
+    KST = ZoneInfo("Asia/Seoul")
+except Exception:  # Windows 에 tzdata 가 없을 때: 한국은 서머타임이 없으므로 UTC+9 고정으로 충분
+    KST = timezone(timedelta(hours=9), "KST")
 
 MARKET_OPEN = time(9, 0)
 MARKET_CLOSE = time(15, 30)

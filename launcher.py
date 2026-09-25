@@ -15,7 +15,12 @@ import time
 import webbrowser
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# 실행 형태: .exe(PyInstaller) / 휴대용 Python(runtime\python) / 일반 Python
+FROZEN = bool(getattr(sys, "frozen", False))
+ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent  # 설정·로그가 저장되는 폴더
+BUNDLE = Path(getattr(sys, "_MEIPASS", ROOT))  # 프로그램 파일(웹 화면, 예시 설정)이 있는 폴더
+if not FROZEN and str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))  # 휴대용 Python(._pth 모드)은 스크립트 폴더를 경로에 넣지 않는다
 REQUIRED = {"numpy": "numpy", "pandas": "pandas", "yaml": "PyYAML", "requests": "requests", "rich": "rich", "websockets": "websockets"}
 
 
@@ -35,6 +40,8 @@ def ensure_console_utf8() -> None:
 
 
 def missing_packages() -> list[str]:
+    if FROZEN:
+        return []  # .exe 에는 모든 패키지가 들어 있다
     missing = []
     for mod, pkg in REQUIRED.items():
         try:
@@ -68,7 +75,7 @@ def main() -> int:
     args = ap.parse_args()
 
     os.chdir(ROOT)
-    if sys.version_info < (3, 10):
+    if not FROZEN and sys.version_info < (3, 10):
         _print(f"Python 3.10 이상이 필요합니다 (현재 {sys.version.split()[0]}). https://www.python.org/downloads/ 에서 설치하세요.")
         return 2
     _print("=" * 56)
@@ -82,8 +89,11 @@ def main() -> int:
         return 1
 
     cfg_path = ROOT / args.config
-    if not cfg_path.exists() and (ROOT / "config.example.yaml").exists():
-        cfg_path.write_text((ROOT / "config.example.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    example = ROOT / "config.example.yaml"
+    if not example.exists():
+        example = BUNDLE / "config.example.yaml"
+    if not cfg_path.exists() and example.exists():
+        cfg_path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
         _print(f"설정 파일을 만들었습니다: {cfg_path.name}")
 
     import logging

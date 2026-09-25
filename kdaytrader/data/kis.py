@@ -55,7 +55,7 @@ class KISClient:
         if not self.token_cache or not self.token_cache.exists():
             return
         try:
-            d = json.loads(self.token_cache.read_text())
+            d = json.loads(self.token_cache.read_text(encoding="utf-8"))
             if d.get("app_key") == self.app_key and d.get("expiry", 0) > _time.time() + 600:
                 self._token = d["token"]
                 self._token_expiry = d["expiry"]
@@ -84,7 +84,7 @@ class KISClient:
         self._token_expiry = _time.time() + int(d.get("expires_in", 86400))
         if self.token_cache:
             try:
-                self.token_cache.write_text(json.dumps({"app_key": self.app_key, "token": self._token, "expiry": self._token_expiry}))
+                self.token_cache.write_text(json.dumps({"app_key": self.app_key, "token": self._token, "expiry": self._token_expiry}), encoding="utf-8")
             except Exception:
                 pass
         return self._token

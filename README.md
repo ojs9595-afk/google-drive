@@ -157,7 +157,10 @@ python main.py backtest --out backtest_results                   # equity_curve.
 ## 프로젝트 구조
 
 ```
-KDayTrader.bat / .command / .sh   원클릭 실행 (그래픽 앱)
+KDayTrader.bat / .command / .sh   원클릭 실행 (그래픽 앱, Windows 는 Python 없으면 휴대용 Python 자동 준비)
+tools/setup_portable.ps1     Windows 휴대용 Python 준비 스크립트
+packaging/kdaytrader.spec    Windows .exe 빌드 설정 (PyInstaller)
+.github/workflows/build-windows.yml  Windows 테스트·exe 빌드·릴리스 자동화
 launcher.py                  의존성 설치 → 앱 서버 → 브라우저 열기
 main.py                      CLI (run / demo / backtest / screen / news / analyze, 인자 없이 실행 시 메뉴)
 start.sh / start.bat         CLI 메뉴 실행 스크립트

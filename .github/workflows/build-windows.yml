@@ -1,0 +1,90 @@
+name: Windows 실행 파일 빌드
+
+on:
+  push:
+    branches: [claude/korean-stock-day-trading-11txe6, main, master]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-windows:
+    name: Windows 테스트
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - name: 테스트
+        run: python -m pytest -q
+
+  build:
+    name: KDayTrader.exe 빌드
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - name: PyInstaller
+        run: pyinstaller packaging/kdaytrader.spec --noconfirm
+      - name: 실행 확인 (Python 없는 폴더에서 서버 기동)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "빈 폴더 (2)"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item -Recurse dist\KDayTrader $dir
+          $exe = Join-Path $dir "KDayTrader\KDayTrader.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--no-browser","--port","18999" -PassThru -WorkingDirectory (Split-Path $exe)
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 1
+            try { $r = Invoke-RestMethod http://127.0.0.1:18999/api/status; if ($r.watchlist_count -gt 0) { $ok = $true; break } } catch {}
+          }
+          $start = Invoke-RestMethod -Method Post -ContentType "application/json" -Body '{"feed":"sim","mode":"paper","news":false,"sim_speed":0}' http://127.0.0.1:18999/api/start
+          Start-Sleep -Seconds 8
+          $state = Invoke-RestMethod http://127.0.0.1:18999/api/state
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "서버가 뜨지 않았습니다" }
+          if ($state.watchlist.Count -lt 1) { throw "엔진 상태 이상: $($state | ConvertTo-Json -Depth 2)" }
+          Write-Host "OK: watchlist=$($state.watchlist.Count) equity=$($state.equity)"
+      - name: 압축
+        shell: pwsh
+        run: |
+          Copy-Item README.md dist\KDayTrader\README.md
+          @"
+          K-DayTrader 실행 방법 (Python 설치 불필요)
+
+          1. 이 ZIP 을 원하는 폴더에 '압축 풀기' 합니다. (ZIP 안에서 바로 실행하지 마세요)
+          2. KDayTrader 폴더 안의 KDayTrader.exe 를 더블클릭합니다.
+          3. 잠시 후 브라우저가 열립니다 (http://127.0.0.1:8787).
+             - Windows 보안 경고(SmartScreen)가 뜨면 '추가 정보' → '실행'을 누르세요.
+             - 방화벽 허용 창이 뜨면 '허용'을 누르세요 (내 PC 안에서만 쓰는 주소입니다).
+          4. 검은 창을 닫으면 프로그램이 종료됩니다.
+
+          설정(config.yaml), 거래 기록(logs 폴더)은 exe 와 같은 폴더에 저장됩니다.
+          "@ | Set-Content -Encoding UTF8 dist\KDayTrader\실행방법.txt
+          Compress-Archive -Path dist\KDayTrader -DestinationPath KDayTrader-windows.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KDayTrader-windows
+          path: KDayTrader-windows.zip
+      - name: 릴리스 게시
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: win-build-${{ github.run_number }}
+          name: K-DayTrader Windows 빌드 ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: KDayTrader-windows.zip
+          body: |
+            Python 설치 없이 실행하는 Windows 버전입니다.
+            KDayTrader-windows.zip 을 받아 압축을 푼 뒤 KDayTrader\KDayTrader.exe 를 더블클릭하세요.
+            커밋: ${{ github.sha }}
